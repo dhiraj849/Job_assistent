@@ -1,0 +1,11 @@
+name: "Your Name"
+experience_years: 5
+education: "Bachelor's in Computer Science"
+
+skills:
+  - Python
+  - Django
+  - FastAPI
+  - PostgreSQL
+  - AWS
+  - Docker

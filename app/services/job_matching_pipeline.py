@@ -7,7 +7,7 @@ from app.services.job_match_service import JobMatchService
 from app.services.job_ranking_service import JobRankingService
 from app.services.job_score_service import JobScoreService
 import structlog
-
+from app.db.job_repository import JobRepository
 logger = structlog.get_logger(__name__)
 
 
@@ -33,7 +33,8 @@ class JobMatchingPipeline:
     async def run(
         self,
         candidate: CandidateProfile,
-        max_match_jobs: int = 5
+        max_match_jobs: int = 5,
+        job_repository: JobRepository | None = None
     ) -> list[JobMatchItem]:
 
         # --------------------------------------------
@@ -46,6 +47,21 @@ class JobMatchingPipeline:
             "jobs_discovered",
             count=len(jobs)
         )
+
+        # --------------------------------------------
+        # 1b. Persist jobs, keep only new ones
+        # --------------------------------------------
+
+        if job_repository is not None:
+            jobs = await job_repository.save_jobs(
+                jobs,
+                source="naukri"
+            )
+
+            logger.info(
+                "new_jobs",
+                count=len(jobs)
+            )
 
         # --------------------------------------------
         # 2. Filter jobs

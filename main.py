@@ -1,9 +1,17 @@
 import asyncio
 
+import structlog
+
 from app.config import settings
 from app.container import create_job_matching_pipeline
-from app.models.candidate_profile import CandidateProfile
 from app.logging_config import setup_logging
+from app.services.profile_loader import load_profile
+from app.db.database import SessionLocal, engine
+from app.db.job_repository import JobRepository
+# from app.db.job_repository import JobRepository
+
+logger = structlog.get_logger(__name__)
+
 
 async def main():
     setup_logging(settings.LOG_LEVEL, settings.LOG_FORMAT)
@@ -11,20 +19,8 @@ async def main():
     # Candidate Profile
     # --------------------------------------------------
 
-    candidate = CandidateProfile(
-        name="Dhiraj Sharma",
-        experience_years=4,
-        skills=[
-            "Python",
-            "Django",
-            "FastAPI",
-            "PostgreSQL",
-            "AWS",
-            "Docker"
-        ],
-        education="Bachelor's in Mathematics"
-    )
-
+    candidate = load_profile(settings.PROFILE_PATH)
+    logger.info("profile_loaded", name=candidate.name, skills=len(candidate.skills))
     # --------------------------------------------------
     # Create Job Matching Pipeline
     # --------------------------------------------------
@@ -38,11 +34,17 @@ async def main():
     # Run Pipeline
     # --------------------------------------------------
 
-    ranked_jobs = await pipeline.run(
-        candidate=candidate,
-        max_match_jobs=settings.MAX_MATCH_JOBS
-    )
+    async with SessionLocal() as session:
+        ranked_jobs = await pipeline.run(
+            candidate=candidate,
+            max_match_jobs=settings.MAX_MATCH_JOBS,
+            job_repository=JobRepository(session),
+        )
 
+    await engine.dispose()
+    if not ranked_jobs:
+        print("\nNo matching jobs found. Try a different keyword or location.")
+        return
     # --------------------------------------------------
     # Display Final Ranking
     # --------------------------------------------------

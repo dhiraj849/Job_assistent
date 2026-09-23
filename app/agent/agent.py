@@ -16,7 +16,7 @@ from app.agent.context import AgentContext
 from app.agent.state import AgentState
 from app.config import settings
 from app.logging_config import setup_logging
-from app.models.candidate_profile import CandidateProfile
+from app.services.profile_loader import load_profile
 
 logger = structlog.get_logger(__name__)
 
@@ -24,20 +24,16 @@ logger = structlog.get_logger(__name__)
 async def run_agent():
     setup_logging(settings.LOG_LEVEL, settings.LOG_FORMAT)
 
+    candidate = load_profile(settings.PROFILE_PATH)
+
+    logger.info(
+        "profile_loaded",
+        name=candidate.name,
+        skills=len(candidate.skills),
+    )
+
     state = AgentState(
-        candidate=CandidateProfile(
-            name="Dhiraj Sharma",
-            experience_years=4,
-            skills=[
-                "Python",
-                "Django",
-                "FastAPI",
-                "PostgreSQL",
-                "AWS",
-                "Docker"
-            ],
-            education="Bachelor's in Mathematics"
-        )
+        candidate=candidate
     )
 
     context = AgentContext(
@@ -65,7 +61,7 @@ async def run_agent():
         prompt=(
             "You are a job search agent.\n\n"
             "First, use search_jobs to search for "
-            "'Python Backend Engineer' in 'Noida'.\n\n"
+            f"'{settings.JOB_SEARCH_KEYWORD}' in '{settings.JOB_SEARCH_LOCATION}'.\n\n"
             "After receiving the search results, "
             "use get_job_details for job 1.\n\n"
             "Then summarize the job details."

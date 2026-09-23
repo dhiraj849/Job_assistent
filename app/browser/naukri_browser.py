@@ -1,53 +1,49 @@
-from playwright.async_api import async_playwright
+import structlog
+from playwright.async_api import Browser, Page, Playwright, async_playwright
+
+logger = structlog.get_logger(__name__)
+
+NAUKRI_URL = "https://www.naukri.com/"
+KEYWORD_INPUT = 'input[placeholder="Enter skills / designations / companies"]'
+LOCATION_INPUT = 'input[placeholder="Enter location"]'
+JOB_CARD = ".srp-jobtuple-wrapper"
 
 
 class NaukriBrowser:
 
-    def __init__(self):
-        self.playwright = None
-        self.browser = None
-        self.page = None
+    def __init__(self, headless: bool = False, timeout_ms: int = 20000):
+        self.headless = headless
+        self.timeout_ms = timeout_ms
 
-    async def start(self):
+        self.playwright: Playwright | None = None
+        self.browser: Browser | None = None
+        self.page: Page | None = None
 
+    async def start(self) -> None:
         self.playwright = await async_playwright().start()
 
         self.browser = await self.playwright.chromium.launch(
-            headless=False
+            headless=self.headless
         )
 
-        context = await self.browser.new_context(
-            ignore_https_errors=True
-        )
+        self.page = await self.browser.new_page()
 
-        self.page = await context.new_page()
+        self.page.set_default_timeout(self.timeout_ms)
 
-    async def open(self, url: str):
+    async def open_naukri(self) -> None:
+        await self.page.goto(NAUKRI_URL)
 
-        await self.page.goto(url)
+    async def search_jobs(self, keyword: str, location: str) -> None:
+        await self.page.locator(KEYWORD_INPUT).fill(keyword)
+        await self.page.locator(LOCATION_INPUT).fill(location)
 
-    async def open_naukri(self):
+        await self.page.get_by_text("Search", exact=True).click()
 
-        await self.open(
-            "https://www.naukri.com/"
-        )
+        await self.page.wait_for_selector(JOB_CARD)
 
-    async def search_jobs(
-        self,
-        keyword: str,
-        location: str
-    ):
+    async def close(self) -> None:
+        if self.browser is not None:
+            await self.browser.close()
 
-        await self.page.locator(
-            'input[placeholder="Enter skills / designations / companies"]'
-        ).fill(keyword)
-
-        await self.page.locator(
-            'input[placeholder="Enter location"]'
-        ).fill(location)
-
-    async def close(self):
-
-        await self.browser.close()
-
-        await self.playwright.stop()
+        if self.playwright is not None:
+            await self.playwright.stop()
