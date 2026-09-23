@@ -1,0 +1,12 @@
+{
+    "servers": {
+        "my-mcp-server": {
+            "type": "stdio",
+            "command": "/media/tspl/403faf1c-1735-429f-8977-618fb4d33282/mcp_server/venv/bin/python",
+            "args": [
+                "/media/tspl/403faf1c-1735-429f-8977-618fb4d33282/mcp_server/server.py"
+            ]
+        }
+    },
+    "inputs": []
+}

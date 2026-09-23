@@ -1,0 +1,18 @@
+[project]
+name = "mcp-server"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "playwright==1.59.0",
+    "pydantic-settings>=2.15.0",
+    "structlog>=26.1.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
