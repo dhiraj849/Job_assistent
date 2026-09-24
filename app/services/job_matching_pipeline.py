@@ -1,13 +1,16 @@
+import structlog
+
+from app.db.job_repository import JobRepository
 from app.models.candidate_profile import CandidateProfile
 from app.models.job_match_item import JobMatchItem
 from app.services.job_discovery_service import JobDiscoveryService
 from app.services.job_filter_service import JobFilterService
 from app.services.job_match_level_service import JobMatchLevelService
 from app.services.job_match_service import JobMatchService
+from app.services.job_ranker import JobRanker
 from app.services.job_ranking_service import JobRankingService
 from app.services.job_score_service import JobScoreService
-import structlog
-from app.db.job_repository import JobRepository
+
 logger = structlog.get_logger(__name__)
 
 
@@ -20,7 +23,8 @@ class JobMatchingPipeline:
         match_service: JobMatchService,
         score_service: JobScoreService,
         level_service: JobMatchLevelService,
-        ranking_service: JobRankingService
+        ranking_service: JobRankingService,
+        ranker: JobRanker,
     ):
 
         self.discovery_service = discovery_service
@@ -29,6 +33,7 @@ class JobMatchingPipeline:
         self.score_service = score_service
         self.level_service = level_service
         self.ranking_service = ranking_service
+        self.ranker = ranker
 
     async def run(
         self,
@@ -49,19 +54,25 @@ class JobMatchingPipeline:
         )
 
         # --------------------------------------------
-        # 1b. Persist jobs, keep only new ones
+        # 1b. Persist jobs
         # --------------------------------------------
 
         if job_repository is not None:
-            jobs = await job_repository.save_jobs(
+            await job_repository.save_jobs(
                 jobs,
                 source="naukri"
             )
 
-            logger.info(
-                "new_jobs",
-                count=len(jobs)
-            )
+        # --------------------------------------------
+        # 1c. Load all unmatched jobs from the database
+        # --------------------------------------------
+
+        if job_repository is not None:
+            unmatched = await job_repository.get_unmatched_jobs_with_ids()
+
+            job_id_by_url = {job.url: job_id for job_id, job in unmatched}
+
+            jobs = [job for job_id, job in unmatched]
 
         # --------------------------------------------
         # 2. Filter jobs
@@ -77,14 +88,32 @@ class JobMatchingPipeline:
         )
 
         # --------------------------------------------
-        # 3. Select jobs for matching
+        # 3. Select jobs for matching (ranked by Qdrant)
         # --------------------------------------------
 
-        selected_jobs = [
-            job
-            for job, matched_keywords in
-            filtered_jobs[:max_match_jobs]
-        ]
+        # The filter returns (job, matched_keywords) pairs; keep only the jobs
+        candidate_jobs = [job for job, matched_keywords in filtered_jobs]
+
+        if job_repository is not None:
+
+            # Qdrant needs each job's PostgreSQL id
+            jobs_with_ids = [
+                (job_id_by_url[job.url], job)
+                for job in candidate_jobs
+                if job.url in job_id_by_url
+            ]
+
+            ranked = self.ranker.rank(
+                candidate,
+                jobs_with_ids,
+                limit=max_match_jobs
+            )
+
+            selected_jobs = [job for job, score in ranked]
+
+        else:
+            # No database: fall back to page order
+            selected_jobs = candidate_jobs[:max_match_jobs]
 
         # --------------------------------------------
         # 4. Match jobs
@@ -108,10 +137,17 @@ class JobMatchingPipeline:
                 total=len(selected_jobs)
             )
 
-            result = await self.match_service.match(
-                candidate_profile=candidate,
-                job=job
-            )
+            try:
+                result = await self.match_service.match(
+                    candidate_profile=candidate,
+                    job=job
+                )
+            except Exception:
+                job_logger.warning(
+                    "matching_failed",
+                    exc_info=True
+                )
+                continue
 
             # ----------------------------------------
             # 5. Calculate overall score
@@ -130,6 +166,14 @@ class JobMatchingPipeline:
             match_level = self.level_service.classify(
                 overall_score
             )
+
+            if job_repository is not None:
+                await job_repository.save_match(
+                    job_id_by_url[job.url],
+                    result,
+                    overall_score,
+                    match_level
+                )
 
             # ----------------------------------------
             # 7. Create match item

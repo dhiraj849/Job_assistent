@@ -29,6 +29,8 @@ class Settings(BaseSettings):
 
     BROWSER_TIMEOUT_MS: int = 20000
 
+    DETAIL_PAGE_DELAY_SECONDS: float = 3.0
+
     # Database
     POSTGRES_USER: str = "job_agent"
 
@@ -39,6 +41,9 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = "localhost"
 
     POSTGRES_PORT: int = 5433
+
+    # Vector database
+    QDRANT_URL: str = "http://localhost:6333"
 
     # X (Twitter) API credentials, used by the MCP server experiment
     X_CLIENT_ID: str | None = None
