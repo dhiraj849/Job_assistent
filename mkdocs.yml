@@ -1,0 +1,66 @@
+site_name: AI Job Agent
+site_description: Self-hosted job discovery, matching and human-approved applying for Naukri
+repo_url: https://github.com/dhiraj849/Job_assistent
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: README.md
+  - Product overview: 01-product-overview.md
+  - Architecture: 02-architecture.md
+  - Workflows: 03-workflows.md
+  - Data model: 04-data-model.md
+  - Agent design: 05-agent-design.md
+  - Browser automation: 06-browser-automation.md
+  - Matching and retrieval: 07-matching-and-retrieval.md
+  - Tech stack: 08-tech-stack.md
+  - Setup and runbook: 09-setup-and-runbook.md
+  - Security: 10-security.md
+  - Observability and testing: 11-observability-and-testing.md
+  - Roadmap and status: 12-roadmap-and-status.md
+  - ADRs:
+      - Template: adr/ADR-000-template.md
+      - 001 Python + FastAPI: adr/ADR-001-python-fastapi.md
+      - 002 Playwright for Naukri: adr/ADR-002-playwright-for-naukri.md
+      - 003 PostgreSQL + Alembic: adr/ADR-003-postgresql-source-of-truth.md
+      - 004 Qdrant over pgvector: adr/ADR-004-qdrant-over-pgvector.md
+      - 005 fastembed embeddings: adr/ADR-005-fastembed-local-embeddings.md
+      - 006 Temporal workflows: adr/ADR-006-temporal-durable-workflows.md
+      - 007 Claude Agent SDK + LLMProvider: adr/ADR-007-claude-agent-sdk-llm-provider.md
+      - 008 Mandatory human approval: adr/ADR-008-mandatory-human-approval.md
+      - 009 Deterministic scoring: adr/ADR-009-deterministic-scoring.md
+      - 010 Self-hosted observability: adr/ADR-010-self-hosted-observability.md
+      - 011 Modular monolith: adr/ADR-011-modular-monolith.md
+      - 012 Next.js dashboard: adr/ADR-012-nextjs-dashboard.md
+      - 013 MinIO artifacts: adr/ADR-013-minio-artifacts.md
