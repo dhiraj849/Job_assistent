@@ -34,7 +34,7 @@ cp .env.example .env
 cp profile.example.yaml profile.yaml
 #   edit profile.yaml with your real data (it is gitignored)
 cp answers.example.yaml answers.yaml
-#   application answers (CTC, notice period...); gitignored; not used by code yet
+#   application answers (CTC, notice period...); gitignored; validated by answers_loader
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 #   put the output in .env as NAUKRI_STATE_KEY=... (only needed for the logged-in tools)
 
@@ -124,6 +124,7 @@ docker-compose (e.g. `TEMPORAL_DB_*` used only by the Temporal containers).
 | `LOG_LEVEL` | `INFO` | logging | Applies to `app.*` loggers; third-party loggers stay at WARNING |
 | `LOG_FORMAT` | `console` | logging | `console` or `json` |
 | `PROFILE_PATH` | `profile.yaml` | `main.py`, agent, scripts | Candidate profile YAML |
+| `ANSWERS_PATH` | `answers.yaml` | `app/services/answers_loader.py` | Apply-question answers YAML (unknown keys rejected) |
 | `BROWSER_HEADLESS` | `false` | Naukri source | `true` for headless Chromium |
 | `BROWSER_TIMEOUT_MS` | `20000` | Naukri source | Playwright default timeout |
 | `DETAIL_PAGE_DELAY_SECONDS` | `3.0` | — | **Defined but unused** (reserved for detail-page scraping) |

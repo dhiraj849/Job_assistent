@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Candidate profile
     PROFILE_PATH: Path = Path("profile.yaml")
 
+    # Standard answers for apply questions (notice period, CTC, skill years)
+    ANSWERS_PATH: Path = Path("answers.yaml")
+
     # Browser
     BROWSER_HEADLESS: bool = False
 

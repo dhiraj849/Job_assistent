@@ -32,7 +32,7 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Approval | CLI yes/no prompt (not persisted) | In progress | `app/agent/approval.py` |
 | Approval | Temporal `decide` signal + 3-day timeout (→ `expired`), status in `jobs.status` | Built | `app/workflows/job_application_workflow.py`, `scripts/list_pending.py`, `scripts/decide_job.py` |
 | Approval | Persist decision note / who / when (`applications` table), API instead of scripts | Planned | — |
-| Apply | Application preparation (answers from `answers.yaml`) | Planned | `answers.example.yaml` only |
+| Apply | Application preparation (answers from `answers.yaml`) | In progress | Loader + validation built: `app/services/answers_loader.py`, `app/models/application_answers.py`; not yet used by an apply activity |
 | Apply | Submission (dry-run + live) | Planned | — |
 | Browser | Session reuse (`storage_state`, Fernet-encrypted, manual login script) | Built | `app/browser/session_store.py`, `scripts/naukri_login.py` |
 | Apply | Apply-flow inspection tool (button type, optional single click, no submit) | Built | `scripts/inspect_apply_flow.py`, `app/browser/apply_button.py` |
@@ -47,7 +47,7 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | API / UI | FastAPI, Next.js dashboard | Planned | — |
 | Observability | structlog console/JSON | Built | `app/logging_config.py` |
 | Observability | OpenTelemetry, Grafana stack, Langfuse | Planned | — |
-| Testing | Unit tests (21) | Built | `tests/` |
+| Testing | Unit tests (48) | Built | `tests/` |
 | Testing | Integration tests, evals | Planned | — |
 | CI | GitHub Actions | Planned | — |
 | Infra | Docker Compose: Postgres 16, Qdrant | Built | `docker-compose.yml` |

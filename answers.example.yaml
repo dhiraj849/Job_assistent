@@ -1,6 +1,7 @@
 # Standard answers for Naukri application questions.
 # Copy to answers.yaml (gitignored) and fill in your real values.
-# Not used by any code yet (apply flow Part B).
+# Loaded and validated by app/services/answers_loader.py (path: ANSWERS_PATH).
+# Unknown keys are rejected, so check spelling when adding fields.
 
 notice_period_days: 30
 current_ctc_lpa: 8.0
