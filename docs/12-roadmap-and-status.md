@@ -100,7 +100,7 @@ All verified in code unless marked otherwise.
 | 13 | ~~Decision note is not persisted~~ **Fixed** | `record_approval` stores note + time in `applications` + `job_decisions`; `record_decision` stores rejections / expiries in `job_decisions` | — | Done (3) |
 | 14 | ~~A re-run workflow for an applied job rewrites `jobs.status` and repeats the LLM match~~ **Fixed** | Workflow checks `is_applied_live` first and returns `applied` (patch `skip-if-applied-v1`); `_set_job_status` refuses any status but `applied` for a live-applied job | — | Done (3) |
 | 15 | Daily-cap expiry leaves the `applications` row `pending` | `_apply` sets `jobs.status=expired` via `update_job_status` after `MAX_CAP_WAIT_DAYS`; nothing updates `applications.outcome` | Row says "approved, waiting" forever; harmless for the cap count | Add an `expired` outcome (CHECK change) or close the row in the same commit (3) |
-| 11 | Auto-apply step not implemented | No apply code anywhere; `approval.py` only sets `next_action = "apply"` | Core feature missing | Phase 4 |
+| 16 | ~~Auto-apply step not implemented~~ **Fixed** | Live apply built in `a095dff`: `NaukriJobApplier` (`app/browser/job_applier.py`) behind `ApplyService` safety rails, `apply_job` activity | — | Done (4) |
 
 ## Tech debt (additional findings)
 
