@@ -1,0 +1,18 @@
+# Standard answers for Naukri application questions.
+# Copy to answers.yaml (gitignored) and fill in your real values.
+# Not used by any code yet (apply flow Part B).
+
+notice_period_days: 30
+current_ctc_lpa: 8.0
+expected_ctc_lpa: 12.0
+current_location: Noida
+willing_to_relocate: true
+total_experience_years: 3
+
+# Years of hands-on experience per skill
+skill_years:
+  python: 3
+  django: 2
+  fastapi: 1
+  postgresql: 2
+  docker: 1
