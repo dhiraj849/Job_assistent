@@ -10,6 +10,7 @@ from app.workflows.retry import APPLY_RETRY_POLICY, RETRY_POLICY
 # workflow sandbox from re-importing them (they are never called here directly).
 with workflow.unsafe.imports_passed_through():
     from app.models.apply_result import ApplyOutcome, ApplyResult
+    from app.models.decision import Decision
     from app.models.job_status import JobStatus
     from app.workflows.activities import (
         apply_job,
@@ -19,6 +20,7 @@ with workflow.unsafe.imports_passed_through():
         load_job,
         match_job,
         record_approval,
+        record_decision,
         save_match,
         semantic_score,
         update_job_status,
@@ -35,6 +37,8 @@ APPLY_PATCH = "apply-job-v1"
 APPROVAL_PATCH = "record-approval-v1"
 # Version marker for the already-applied check at the start of _run.
 SKIP_APPLIED_PATCH = "skip-if-applied-v1"
+# Version marker for update_job_status(REJECTED/EXPIRED) -> record_decision.
+DECISION_PATCH = "record-decision-v1"
 
 # If the daily cap is full, try again on this many following days, then give up:
 # an approval older than that is probably stale.
@@ -130,10 +134,13 @@ class JobApplicationWorkflow:
                 lambda: self._approved is not None, timeout=APPROVAL_TIMEOUT
             )
         except asyncio.TimeoutError:
-            return await self._set_status(job_id, JobStatus.EXPIRED)
+            # No answer is a decision too: logged so stats can tell it from "no".
+            return await self._record_decision(job_id, Decision.EXPIRED, workflow.now(), "")
 
         if not self._approved:
-            return await self._set_status(job_id, JobStatus.REJECTED)
+            return await self._record_decision(
+                job_id, Decision.REJECTED, self._decided_at, self._note
+            )
 
         # 5. Record the approval (applications row + jobs.status), then apply.
         # Same patching idea as APPLY_PATCH below: old histories that already
@@ -186,6 +193,24 @@ class JobApplicationWorkflow:
                 await workflow.sleep(timedelta(seconds=result.retry_after_seconds))
 
         return await self._set_status(job_id, JobStatus.EXPIRED)
+
+    async def _record_decision(
+        self, job_id: int, decision: Decision, decided_at: datetime, note: str
+    ) -> str:
+        status = JobStatus(decision.value)
+        # Same patching idea as APPROVAL_PATCH: histories that already ran
+        # update_job_status(REJECTED/EXPIRED) replay the old path.
+        if not workflow.patched(DECISION_PATCH):
+            return await self._set_status(job_id, status)
+
+        await workflow.execute_activity(
+            record_decision,
+            args=[job_id, decision, decided_at, note],
+            start_to_close_timeout=DB_TIMEOUT,
+            retry_policy=RETRY_POLICY,
+        )
+        self._status = status
+        return status.value
 
     async def _set_status(self, job_id: int, status: JobStatus) -> str:
         # All DB writes go through an activity; the workflow only keeps a copy

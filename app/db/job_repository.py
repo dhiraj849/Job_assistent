@@ -5,8 +5,9 @@ from sqlalchemy import and_, func, not_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ApplicationRecord, JobMatchRecord, JobRecord
+from app.db.models import ApplicationRecord, JobDecisionRecord, JobMatchRecord, JobRecord
 from app.models.application import Application, ApplicationOutcome
+from app.models.decision import Decision, JobDecision
 from app.models.job import Job
 from app.models.job_match import JobMatchResult
 from app.models.job_status import JobStatus
@@ -193,27 +194,13 @@ class JobRepository:
     async def update_status(self, job_id: int, status: JobStatus) -> bool:
         """Set a job's lifecycle status and when it changed.
 
-        "applied" (live) is terminal: any other status is refused for such a
-        job (returns False). One UPDATE with the guard in its WHERE, so there
-        is no check-then-write race. Defense in depth behind the workflow's
-        own already-applied check.
+        Returns False if refused: "applied" (live) is terminal (see _set_job_status).
         """
-        stmt = (
-            update(JobRecord)
-            .where(JobRecord.id == job_id)
-            .values(status=status.value, status_updated_at=func.now())
-            .returning(JobRecord.id)
-        )
-        if status != JobStatus.APPLIED:
-            stmt = stmt.where(~_applied_live_exists(JobRecord.id))
-        written = await self.session.scalar(stmt) is not None
+        written = await self._set_job_status(job_id, status)
         await self.session.commit()
 
         if written:
             logger.info("job_status_updated", job_id=job_id, status=status.value)
-        else:
-            # Loud on purpose: a refused write means some caller has a bug.
-            logger.warning("job_status_update_refused", job_id=job_id, status=status.value)
         return written
 
     async def is_applied_live(self, job_id: int) -> bool:
@@ -273,11 +260,15 @@ class JobRepository:
             artifacts_dir=record.artifacts_dir,
         )
 
-    async def record_approval(self, job_id: int, approved_at: datetime, note: str) -> bool:
-        """Store my approval (pending row) and set jobs.status=approved, atomically.
+    async def record_approval(
+        self, job_id: int, approved_at: datetime, note: str, workflow_run_id: str
+    ) -> bool:
+        """Store my approval (pending row), the decision log row and
+        jobs.status=approved, atomically.
 
         A re-approval (e.g. after failed) resets the row to pending. A job
-        already applied live is left untouched; returns False then.
+        already applied live is left untouched; returns False then (the
+        decision is still logged: I did say yes).
         """
         values = dict(
             outcome=ApplicationOutcome.PENDING.value,
@@ -296,12 +287,72 @@ class JobRepository:
         ).returning(ApplicationRecord.id)
         written = await self.session.scalar(stmt) is not None
 
+        await self._insert_decision(job_id, Decision.APPROVED, approved_at, note, workflow_run_id)
         if written:
             await self._set_job_status(job_id, JobStatus.APPROVED)
         await self.session.commit()
 
         logger.info("approval_recorded", job_id=job_id, written=written)
         return written
+
+    async def record_decision(
+        self,
+        job_id: int,
+        decision: Decision,
+        decided_at: datetime,
+        note: str,
+        workflow_run_id: str,
+    ) -> None:
+        """Log a rejection / expiry and set the matching jobs.status, in one commit.
+
+        Approvals go through record_approval (they also need an applications row).
+        """
+        if decision == Decision.APPROVED:
+            raise ValueError("use record_approval for approvals")
+        await self._insert_decision(job_id, decision, decided_at, note, workflow_run_id)
+        await self._set_job_status(job_id, JobStatus(decision.value))
+        await self.session.commit()
+
+        logger.info("decision_recorded", job_id=job_id, decision=decision.value)
+
+    async def get_decisions(self, job_id: int) -> list[JobDecision]:
+        """All decisions for one job, oldest first."""
+        records = await self.session.scalars(
+            select(JobDecisionRecord)
+            .where(JobDecisionRecord.job_id == job_id)
+            .order_by(JobDecisionRecord.decided_at, JobDecisionRecord.id)
+        )
+        return [
+            JobDecision(
+                decision=Decision(r.decision),
+                note=r.note,
+                decided_at=r.decided_at,
+                workflow_run_id=r.workflow_run_id,
+            )
+            for r in records
+        ]
+
+    async def _insert_decision(
+        self,
+        job_id: int,
+        decision: Decision,
+        decided_at: datetime,
+        note: str,
+        workflow_run_id: str,
+    ) -> None:
+        # No commit. DO NOTHING on the run id: a retried activity (same run)
+        # must not log the same decision twice.
+        await self.session.execute(
+            insert(JobDecisionRecord)
+            .values(
+                job_id=job_id,
+                decision=decision.value,
+                note=note,
+                decided_at=decided_at,
+                workflow_run_id=workflow_run_id,
+            )
+            .on_conflict_do_nothing(index_elements=[JobDecisionRecord.workflow_run_id])
+        )
 
     async def save_apply_result(
         self,
@@ -434,10 +485,24 @@ class JobRepository:
         )
         return [tuple(row) for row in result.all()]
 
-    async def _set_job_status(self, job_id: int, status: JobStatus) -> None:
-        # No commit: the caller commits it together with its other writes.
-        await self.session.execute(
+    async def _set_job_status(self, job_id: int, status: JobStatus) -> bool:
+        """Write jobs.status; no commit, the caller commits it with its other writes.
+
+        "applied" (live) is terminal: any other status is refused for such a
+        job (returns False). The guard sits in the UPDATE's WHERE, so there is
+        no check-then-write race. Defense in depth behind the workflow's own
+        already-applied check.
+        """
+        stmt = (
             update(JobRecord)
             .where(JobRecord.id == job_id)
             .values(status=status.value, status_updated_at=func.clock_timestamp())
+            .returning(JobRecord.id)
         )
+        if status != JobStatus.APPLIED:
+            stmt = stmt.where(~_applied_live_exists(JobRecord.id))
+        written = await self.session.scalar(stmt) is not None
+        if not written:
+            # Loud on purpose: a refused write means some caller has a bug.
+            logger.warning("job_status_update_refused", job_id=job_id, status=status.value)
+        return written

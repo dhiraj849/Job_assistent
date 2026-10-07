@@ -7,7 +7,7 @@ server jumps over the 3-day approval timeout (and daily-cap waits) instantly.
 import asyncio
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from temporalio import activity
@@ -17,11 +17,12 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
 
 from app.models.apply_result import ApplyOutcome, ApplyResult
+from app.models.decision import Decision
 from app.models.job import Job
 from app.models.job_match import JobMatchResult
 from app.models.job_match_item import JobMatchItem
 from app.models.job_status import JobStatus
-from app.workflows.job_application_workflow import JobApplicationWorkflow
+from app.workflows.job_application_workflow import APPROVAL_TIMEOUT, JobApplicationWorkflow
 
 TASK_QUEUE = "test-job-application"
 JOB_ID = 42
@@ -103,13 +104,18 @@ def make_activities(
     async def record_approval(job_id: int, approved_at: datetime, note: str) -> None:
         statuses.append(JobStatus.APPROVED.value)
 
+    # record_decision also sets jobs.status (rejected/expired).
+    @activity.defn(name="record_decision")
+    async def record_decision(job_id: int, decision: Decision, decided_at: datetime, note: str) -> None:
+        statuses.append(decision.value)
+
     @activity.defn(name="apply_job")
     async def apply_job(job_id: int) -> ApplyResult:
         applied.append(job_id)
         return apply_results[min(len(applied), len(apply_results)) - 1]
 
     return [is_applied_live, load_job, filter_job, semantic_score, match_job,
-            save_match, update_job_status, record_approval, apply_job]
+            save_match, update_job_status, record_approval, record_decision, apply_job]
 
 
 async def wait_for_status(handle: WorkflowHandle, expected: str) -> None:
@@ -337,3 +343,49 @@ def test_real_record_approval_history_replays():
         "job-38", (HISTORIES / "record_approval_v1.json").read_text()
     )
     asyncio.run(replayer().replay_workflow(history))
+
+
+# --- Decisions (rejected / expired) are logged ------------------------------
+
+
+def _signal_time(history: WorkflowHistory) -> datetime:
+    signal = next(e for e in history.events if e.HasField("workflow_execution_signaled_event_attributes"))
+    return signal.event_time.ToDatetime()
+
+
+def test_rejection_is_recorded_with_note_and_decision_time():
+    _, _, _, history = asyncio.run(run_workflow("potential", decision=False))
+
+    [(job_id, decision, decided_at, note)] = _scheduled_inputs(history, "record_decision")
+    assert (job_id, decision, note) == (JOB_ID, "rejected", "test")
+    decided = datetime.fromisoformat(decided_at)
+    assert decided >= _signal_time(history).replace(tzinfo=decided.tzinfo)
+    # The old status-only write is gone on the new path.
+    assert [s for _, s in _scheduled_inputs(history, "update_job_status")] == PRE_APPROVAL
+
+
+def test_expiry_is_recorded_at_the_timeout():
+    _, _, _, history = asyncio.run(run_workflow("strong", decision=None))
+
+    [(job_id, decision, decided_at, note)] = _scheduled_inputs(history, "record_decision")
+    assert (job_id, decision, note) == (JOB_ID, "expired", "")
+    started = history.events[0].event_time.ToDatetime(tzinfo=timezone.utc)
+    # workflow.now() after the (time-skipped) 3-day timer, not the worker's clock.
+    assert datetime.fromisoformat(decided_at) - started >= APPROVAL_TIMEOUT
+
+
+def test_decision_histories_replay_on_new_path():
+    for decision in (False, None):
+        _, _, _, history = asyncio.run(run_workflow("potential", decision=decision))
+        asyncio.run(replayer().replay_workflow(history))
+
+
+# rejected_v1.json / expired_v1.json were recorded with the code from BEFORE
+# "record-decision-v1" (they end with update_job_status(REJECTED/EXPIRED)).
+
+
+def test_pre_decision_patch_histories_replay_on_old_path():
+    for name in ("rejected_v1", "expired_v1"):
+        history = WorkflowHistory.from_json(name, (HISTORIES / f"{name}.json").read_text())
+        asyncio.run(replayer().replay_workflow(history))
+        assert "record_decision" not in history.to_json()

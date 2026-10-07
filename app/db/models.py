@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 from app.models.application import ApplicationOutcome
+from app.models.decision import Decision
 from app.models.job_status import JobStatus
 
 
@@ -108,5 +109,37 @@ class ApplicationRecord(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+_DECISIONS = ", ".join(f"'{decision.value}'" for decision in Decision)
+
+
+class JobDecisionRecord(Base):
+    """Append-only log of my decisions at the approval step (audit).
+
+    Separate from applications on purpose: an applications row means
+    "approved", so a rejected row there would pass ApplyService's approval
+    check. Many rows per job are fine (reject now, re-run and approve later).
+    """
+
+    __tablename__ = "job_decisions"
+    __table_args__ = (
+        CheckConstraint(f"decision IN ({_DECISIONS})", name="ck_job_decisions_decision"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
+    decision: Mapped[str] = mapped_column(String(20))
+    note: Mapped[str] = mapped_column(Text, server_default="")
+    # From workflow.now(): when I decided (or when the timeout fired).
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # UNIQUE: one decision per workflow run, so a retried activity
+    # cannot write it twice (idempotency key). Also links to the Temporal UI.
+    workflow_run_id: Mapped[str] = mapped_column(String(64), unique=True)
+
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -40,6 +40,7 @@ async def main() -> None:
             activities.update_job_status,
             activities.is_applied_live,
             activities.record_approval,
+            activities.record_decision,
             activities.apply_job,
             activities.apply_job_dry_run,  # old histories (pre "apply-job-v1")
         ],

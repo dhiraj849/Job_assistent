@@ -20,6 +20,7 @@ from app.db.job_repository import JobRepository
 from app.job_sources.naukri import NaukriJobSource
 from app.models.apply_result import ApplyResult
 from app.models.candidate_profile import CandidateProfile
+from app.models.decision import Decision
 from app.models.job import Job
 from app.models.job_match_item import JobMatchItem
 from app.models.job_status import JobStatus
@@ -167,13 +168,26 @@ async def is_applied_live(job_id: int) -> bool:
 
 @activity.defn
 async def record_approval(job_id: int, approved_at: datetime, note: str) -> None:
-    """Store my approval: applications row (pending) + jobs.status=approved, one commit.
+    """Store my approval: applications row (pending) + job_decisions row +
+    jobs.status=approved, one commit.
 
-    Idempotent: a retry just rewrites the same values. A job already applied
-    live is left alone; apply_job then returns ALREADY_APPLIED.
+    Idempotent: a retry rewrites the same applications values, and the
+    decision row is keyed by the workflow run id. A job already applied live
+    is left alone; apply_job then returns ALREADY_APPLIED.
     """
+    # Read here, not passed by the workflow: the args stay the same, so
+    # histories from before job_decisions existed still replay.
+    run_id = activity.info().workflow_run_id
     async with SessionLocal() as session:
-        await JobRepository(session).record_approval(job_id, approved_at, note)
+        await JobRepository(session).record_approval(job_id, approved_at, note, run_id)
+
+
+@activity.defn
+async def record_decision(job_id: int, decision: Decision, decided_at: datetime, note: str) -> None:
+    """Log a rejection or expiry (job_decisions) + set jobs.status, one commit."""
+    run_id = activity.info().workflow_run_id
+    async with SessionLocal() as session:
+        await JobRepository(session).record_decision(job_id, decision, decided_at, note, run_id)
 
 
 @activity.defn

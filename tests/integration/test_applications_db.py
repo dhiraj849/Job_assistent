@@ -18,6 +18,7 @@ from app.db.database import database_url
 from app.db.job_repository import ApplicationNotWritableError, JobRepository
 from app.db.models import JobRecord
 from app.models.application import ApplicationOutcome
+from app.models.decision import Decision
 from app.models.job_status import JobStatus
 
 pytestmark = pytest.mark.integration
@@ -52,6 +53,11 @@ def run_in_rollback(test):
         pytest.skip(f"Postgres not reachable: {error}")
 
 
+def run_id() -> str:
+    """A fresh Temporal workflow run id (the job_decisions idempotency key)."""
+    return str(uuid.uuid4())
+
+
 async def new_job(session: AsyncSession, status: JobStatus = JobStatus.AWAITING_APPROVAL) -> int:
     job = JobRecord(
         source="test", url=f"https://test/{uuid.uuid4()}", title="T", company="C",
@@ -70,7 +76,7 @@ def test_approval_then_apply_writes_both_tables():
     async def test(repo: JobRepository, session):
         job_id = await new_job(session)
 
-        assert await repo.record_approval(job_id, APPROVED_AT, "looks good")
+        assert await repo.record_approval(job_id, APPROVED_AT, "looks good", run_id())
         application = await repo.get_application(job_id)
         assert application.outcome == ApplicationOutcome.PENDING
         assert application.approval_note == "looks good"
@@ -91,7 +97,7 @@ def test_approval_then_apply_writes_both_tables():
 def test_live_applied_row_is_never_overwritten():
     async def test(repo: JobRepository, session):
         job_id = await new_job(session)
-        await repo.record_approval(job_id, APPROVED_AT, "")
+        await repo.record_approval(job_id, APPROVED_AT, "", run_id())
         await repo.save_apply_result(job_id, ApplicationOutcome.APPLIED, JobStatus.APPLIED, "", False, None)
 
         # A second apply result is refused...
@@ -100,7 +106,7 @@ def test_live_applied_row_is_never_overwritten():
                 job_id, ApplicationOutcome.FAILED, JobStatus.FAILED, "boom", False, None
             )
         # ...and so is a re-approval (the workflow-restart case from the bug).
-        assert not await repo.record_approval(job_id, APPROVED_AT, "again")
+        assert not await repo.record_approval(job_id, APPROVED_AT, "again", run_id())
         assert not await repo.record_manual_apply(job_id, "by hand")
 
         assert (await repo.get_application(job_id)).applied_live
@@ -132,7 +138,7 @@ def test_status_and_application_change_together_or_not_at_all(monkeypatch):
 
     async def test(repo: JobRepository, session):
         job_id = await new_job(session)
-        await repo.record_approval(job_id, APPROVED_AT, "")
+        await repo.record_approval(job_id, APPROVED_AT, "", run_id())
 
         async def broken_status_write(job_id, status):
             raise RuntimeError("jobs update failed")
@@ -209,7 +215,7 @@ def test_status_of_live_applied_job_is_never_rewritten():
 def test_dry_run_apply_does_not_lock_the_status():
     async def test(repo: JobRepository, session):
         job_id = await new_job(session)
-        await repo.record_approval(job_id, APPROVED_AT, "")
+        await repo.record_approval(job_id, APPROVED_AT, "", run_id())
         await repo.save_apply_result(
             job_id, ApplicationOutcome.APPLIED, JobStatus.APPLIED_DRY_RUN, "dry", True, None
         )
@@ -231,5 +237,94 @@ def test_guard_only_looks_at_its_own_job():
         # The correlated EXISTS must match on job_id, not "any applied row".
         assert not await repo.is_applied_live(other_job)
         assert await repo.update_status(other_job, JobStatus.SHORTLISTED)
+
+    run_in_rollback(test)
+
+
+# --- job_decisions ----------------------------------------------------------
+
+
+def test_rejection_is_logged_with_status_in_one_commit():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+
+        await repo.record_decision(job_id, Decision.REJECTED, APPROVED_AT, "too junior", run_id())
+
+        [decision] = await repo.get_decisions(job_id)
+        assert decision.decision == Decision.REJECTED
+        assert decision.note == "too junior"
+        assert decision.decided_at == APPROVED_AT
+        assert await job_status(session, job_id) == "rejected"
+        # A rejection never creates an applications row (= never approved).
+        assert await repo.get_application(job_id) is None
+
+    run_in_rollback(test)
+
+
+def test_retried_decision_is_logged_once():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        run = run_id()
+
+        # Same workflow run = an activity retry.
+        await repo.record_decision(job_id, Decision.EXPIRED, APPROVED_AT, "", run)
+        await repo.record_decision(job_id, Decision.EXPIRED, APPROVED_AT, "", run)
+
+        assert len(await repo.get_decisions(job_id)) == 1
+        assert await job_status(session, job_id) == "expired"
+
+    run_in_rollback(test)
+
+
+def test_approval_is_logged_and_history_is_kept():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+
+        # Rejected in one run, approved in a later run: both stay.
+        await repo.record_decision(job_id, Decision.REJECTED, APPROVED_AT, "not now", run_id())
+        await repo.record_approval(job_id, APPROVED_AT + timedelta(days=1), "ok now", run_id())
+
+        decisions = await repo.get_decisions(job_id)
+        assert [d.decision for d in decisions] == [Decision.REJECTED, Decision.APPROVED]
+        assert decisions[1].note == "ok now"
+        assert await job_status(session, job_id) == "approved"
+
+    run_in_rollback(test)
+
+
+def test_decision_on_live_applied_job_keeps_status_applied():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_manual_apply(job_id, "by hand")
+
+        # The decision is still logged (it happened), but the guard keeps "applied".
+        await repo.record_decision(job_id, Decision.REJECTED, APPROVED_AT, "", run_id())
+        assert [d.decision for d in await repo.get_decisions(job_id)] == [Decision.REJECTED]
+        assert await job_status(session, job_id) == "applied"
+
+    run_in_rollback(test)
+
+
+def test_record_decision_refuses_approvals():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        with pytest.raises(ValueError, match="record_approval"):
+            await repo.record_decision(job_id, Decision.APPROVED, APPROVED_AT, "", run_id())
+
+    run_in_rollback(test)
+
+
+def test_check_constraint_rejects_unknown_decision():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        with pytest.raises(IntegrityError, match="ck_job_decisions_decision"):
+            await session.execute(
+                text(
+                    "INSERT INTO job_decisions (job_id, decision, decided_at, workflow_run_id)"
+                    " VALUES (:j, 'maybe', now(), :r)"
+                ),
+                {"j": job_id, "r": run_id()},
+            )
+        await session.rollback()
 
     run_in_rollback(test)
