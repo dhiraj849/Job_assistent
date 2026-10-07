@@ -16,10 +16,11 @@ subscription. Versions are from `pyproject.toml`, `docker-compose.yml` and `.pyt
 | Migrations | Alembic | Built | Standard for SQLAlchemy, autogenerate | yoyo, raw SQL | Free |
 | Vector DB | Qdrant v1.18.2 (Docker) | Built | Filtering by ID, payloads, per-model collections ([ADR-004](adr/ADR-004-qdrant-over-pgvector.md)) | pgvector, Chroma, FAISS | Free |
 | Embeddings | fastembed, `BAAI/bge-small-en-v1.5` (384-d) | Built | Local CPU/ONNX, small, no PyTorch ([ADR-005](adr/ADR-005-fastembed-local-embeddings.md)) | sentence-transformers, Ollama embeddings, OpenAI | Free |
-| LLM (primary) | Claude via `claude-agent-sdk` | Built (dependency undeclared) | Uses existing subscription, JSON-schema output ([ADR-007](adr/ADR-007-claude-agent-sdk-llm-provider.md)) | Anthropic API (paid per token), OpenAI | Existing subscription |
+| LLM (primary) | Claude via `claude-agent-sdk` | Built | Uses existing subscription, JSON-schema output ([ADR-007](adr/ADR-007-claude-agent-sdk-llm-provider.md)) | Anthropic API (paid per token), OpenAI | Existing subscription |
 | LLM (fallback) | Ollama (local model) | Planned | Offline / rate-limit fallback | llama.cpp, vLLM | Free (local compute) |
+| Session encryption | `cryptography` (Fernet) | Built | Encrypts the saved Naukri session at rest; simple symmetric API ([ADR-014](adr/ADR-014-encrypted-naukri-session.md)) | `age`, OS keyring, plain file | Free |
 | Logging | structlog (console / JSON) | Built | Structured events, contextvars | loguru, stdlib logging | Free |
-| Workflow engine | Temporal (self-hosted) + `temporalio` SDK | Planned | Durable execution, signals, timers, schedules ([ADR-006](adr/ADR-006-temporal-durable-workflows.md)) | Celery/ARQ + Redis, Prefect, LangGraph | Free |
+| Workflow engine | Temporal (self-hosted) + `temporalio` SDK | In progress | Durable execution, signals, timers, schedules ([ADR-006](adr/ADR-006-temporal-durable-workflows.md)) | Celery/ARQ + Redis, Prefect, LangGraph | Free |
 | API | FastAPI | Planned | Async, Pydantic-native ([ADR-001](adr/ADR-001-python-fastapi.md)) | Django, Litestar, Flask | Free |
 | Dashboard | Next.js | Planned (later) | Approval queue UI ([ADR-012](adr/ADR-012-nextjs-dashboard.md)) | Streamlit, HTMX + Jinja, React SPA | Free |
 | Artifact storage | MinIO (S3-compatible) | Planned | Screenshots, HTML, resumes ([ADR-013](adr/ADR-013-minio-artifacts.md)) | Local filesystem, Postgres bytea | Free |
@@ -31,12 +32,9 @@ subscription. Versions are from `pyproject.toml`, `docker-compose.yml` and `.pyt
 
 ## Dependency gaps (verified)
 
-- `claude-agent-sdk` and `mcp` are imported (`app/llm/claude_code.py`, `app/agent/*`, `server.py`)
-  but missing from `pyproject.toml` and `uv.lock`. They are only present because they were installed
-  manually into `.venv` (versions found there: `claude-agent-sdk 0.2.157`, `mcp 2.2.0`).
 - `numpy` is imported by `scripts/embedding_demo.py`; it is installed transitively (fastembed) but
   not declared.
-- FastAPI, Temporal, Ollama, OpenTelemetry, Langfuse and MinIO clients are not dependencies yet.
+- FastAPI, Ollama, OpenTelemetry, Langfuse and MinIO clients are not dependencies yet.
 
 ## Resource footprint (planned full stack)
 

@@ -27,14 +27,14 @@ flowchart LR
 
 | Step | Code | Behaviour |
 |---|---|---|
-| Launch | `NaukriBrowser.start()` (`app/browser/naukri_browser.py:22`) | New Playwright, `chromium.launch(headless=...)`, **fresh context every run** (no saved session), default timeout `BROWSER_TIMEOUT_MS` (20 s). |
+| Launch | `NaukriBrowser.start()` (`app/browser/naukri_browser.py`) | New Playwright, `chromium.launch(headless=...)`, new context every run, default timeout `BROWSER_TIMEOUT_MS` (20 s). With `logged_in=True` the context starts from the saved, decrypted session (see below). |
 | Open | `open_naukri()` | `goto("https://www.naukri.com/")`. |
 | Search | `search_jobs()` | Fill keyword + location inputs, click text "Search", `wait_for_selector(JOB_CARD)`. |
 | Extract | `NaukriJobSource.get_jobs()` (`app/job_sources/naukri.py:30`) → `NaukriExtractor.extract_job()` | Iterates cards on the **first result page only**; per-card failures are logged (`job_extraction_failed`) and skipped. |
 | No results | `naukri.py:53` | Timeout waiting for cards → `no_job_cards_found` warning, returns `[]`. |
 | Close | `finally: browser.close()` | Always closes browser and Playwright. |
 
-No login is performed; search results are public.
+Search does not log in (results are public). Only the inspection tools below use a logged-in session.
 
 ## Selectors
 
@@ -58,19 +58,41 @@ Planned hardening: move all selectors into one `app/browser/naukri_selectors.py`
 role/text-based locators where possible, and add a smoke test against a saved HTML fixture so a
 markup change fails in CI rather than silently returning empty fields.
 
-## Session reuse via `storage_state` (Planned)
+## Session reuse via `storage_state` (Built)
 
-Applying requires a logged-in Naukri account. Design:
+Applying requires a logged-in Naukri account ([ADR-014](adr/ADR-014-encrypted-naukri-session.md)).
 
-1. `scripts/naukri_login.py` (planned) opens a **headed** browser; the user logs in manually
-   (including any OTP). The system never stores the Naukri password.
-2. On success, save `context.storage_state()` to `STORAGE_STATE_PATH` (default `.secrets/naukri_state.json`).
-3. Subsequent runs create the context with `browser.new_context(storage_state=...)`.
-4. If a page redirects to login, the activity fails with `SessionExpired` (non-retryable) and the
-   user is asked to log in again.
+1. `scripts/naukri_login.py` first checks `NAUKRI_STATE_KEY` (`check_key()`), so a manual login is
+   never wasted, then always opens a **headed** browser at `NAUKRI_LOGIN_URL`
+   (`/nlogin/login`). The user logs in manually (including any OTP) and presses Enter in the
+   terminal. The system never sees or stores the Naukri password.
+2. `NaukriBrowser.is_logged_in()` waits up to 5 s for `LOGGED_IN_MARKER` (header avatar / profile
+   link). Only if it is visible is `context.storage_state()` saved; otherwise nothing is written and
+   the script exits 1.
+3. `app/browser/session_store.py`: `save_state` / `load_state` encrypt with **Fernet** using
+   `NAUKRI_STATE_KEY` into `NAUKRI_STATE_PATH` (default `secrets/naukri_state.enc`; folder `0700`,
+   file `0600`). Missing key, missing file or wrong key raise `SessionStateError` with a message that
+   contains no secret. Logs show only cookie count, domains and origin count.
+4. `NaukriBrowser(logged_in=True)` creates the context with `new_context(storage_state=load_state())`.
+5. Expiry: callers check `is_logged_in()`; if false, re-run `scripts/naukri_login.py`.
+   *Planned:* a non-retryable `SessionExpired` activity error once apply runs inside Temporal.
 
-The state file contains session cookies and is equivalent to a password: gitignored, `chmod 600`,
-encrypted at rest ([10](10-security.md#browser-session)).
+`LOGGED_IN_MARKER` detected a real login on the first live run (2026-09-24).
+
+## Apply-flow inspection (Built, no apply)
+
+`scripts/inspect_apply_flow.py <job_id> [--click]` — a manual tool to learn the apply markup before
+any apply code exists.
+
+- Loads the job URL from Postgres, opens it with the saved session, stops if the session expired.
+- Saves `artifacts/inspect/<job_id>/01_job_page.html` + full-page `.png`.
+- Reads the texts of `APPLY_BUTTON_CANDIDATES` and classifies them with
+  `classify_apply_button()` (`app/browser/apply_button.py`): `naukri_apply`, `company_site`,
+  `already_applied` or `unknown`. Prints the texts it saw, so wrong selectors are easy to spot.
+- `--click` acts **only** when the type is `naukri_apply`: clicks the button whose text is exactly
+  "Apply" / "Apply now" once, waits 5 s, saves `02_after_click.*`, then closes the browser. It
+  never answers questions and never presses a submit button.
+- The button selectors are **unverified**; the saved HTML is used to correct them.
 
 ## Rate limiting and delays
 
@@ -83,6 +105,8 @@ encrypted at rest ([10](10-security.md#browser-session)).
 | Headed by default, real Chromium, no stealth plugins | Built (headed default); no-stealth is a rule |
 
 ## Screenshots and artifacts (Planned)
+
+Today only the inspection script writes artifacts, to the local, gitignored `artifacts/` folder.
 
 - Capture full-page screenshot + page HTML on: every apply step (before fill, before submit, after
   submit) and on any browser activity failure.

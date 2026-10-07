@@ -74,7 +74,7 @@ flowchart TB
         dash["Next.js dashboard<br/>[Planned]"]
         api["FastAPI API<br/>[Planned]"]
         tsrv["Temporal server + UI<br/>[Planned]"]
-        subgraph worker["Temporal worker (Python) [Planned]"]
+        subgraph worker["Temporal worker (Python) [In progress]"]
             wf["Workflows<br/>Discovery / Application"]
             acts["Activities<br/>browser, match, persist"]
             pw["Playwright Chromium"]
@@ -205,7 +205,7 @@ flowchart TB
 | Persistence | `app/db/`, `alembic/` | Tables, repository, migrations | Built |
 | DTOs | `app/models/` | Pydantic models passed between layers | Built |
 | API / UI | — | FastAPI, Next.js | Planned |
-| Workflows | — | Temporal | Planned |
+| Workflows | `app/workflows/` | Temporal workflows, activities, worker, client (Pydantic converter) | In progress (discovery + per-job application with approval; apply is dry-run) |
 
 ### Dependency rules (to keep as the code grows)
 
@@ -213,7 +213,7 @@ flowchart TB
 - Domain services must not import Playwright, SQLAlchemy, Qdrant or an LLM SDK directly; they get
   them through an interface (`JobSource`, `LLMProvider`, repository). *Currently violated by
   `JobMatchService`, which instantiates `ClaudeCodeProvider` itself (`app/services/job_match_service.py:11`).*
-- Temporal workflow code (planned) must be deterministic: no I/O, no `datetime.now()`, no randomness
+- Temporal workflow code must be deterministic: no I/O, no `datetime.now()`, no randomness
   — all of that lives in activities.
 
 ## 5. Current vs target — summary

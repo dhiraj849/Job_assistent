@@ -23,26 +23,26 @@ cd Job_assistent
 # 1. Python dependencies
 uv sync
 
-# 2. WORKAROUND until the dependency fix lands (see Known issues):
-#    claude-agent-sdk and mcp are imported but not declared in pyproject.toml.
-uv pip install claude-agent-sdk mcp
-
-# 3. Browser
+# 2. Browser
 uv run playwright install chromium
 #   On a fresh Linux machine you may also need system libraries:
 #   uv run playwright install-deps chromium
 
-# 4. Configuration
+# 3. Configuration
 cp .env.example .env
 #   then add the POSTGRES_* variables below to .env (they are not in .env.example yet)
 cp profile.example.yaml profile.yaml
 #   edit profile.yaml with your real data (it is gitignored)
+cp answers.example.yaml answers.yaml
+#   application answers (CTC, notice period...); gitignored; not used by code yet
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#   put the output in .env as NAUKRI_STATE_KEY=... (only needed for the logged-in tools)
 
-# 5. Infrastructure
+# 4. Infrastructure
 docker compose up -d
 docker compose ps          # postgres should become "healthy"
 
-# 6. Database schema
+# 5. Database schema
 uv run alembic upgrade head
 ```
 
@@ -59,6 +59,29 @@ POSTGRES_DB=job_agent
 `docker-compose.yml` reads `POSTGRES_USER/PASSWORD/DB` from `.env`; the app reads the same
 variables, so one file configures both.
 
+## One-command stack (Makefile)
+
+After first-time setup, the `Makefile` in the project root drives the whole stack.
+Run `make` to list targets.
+
+| Target | What it does |
+|---|---|
+| `make setup` | `uv sync` + `uv run playwright install chromium` |
+| `make start` | Checks `docker`, `uv`, `claude` on PATH and that `.env` exists → `docker compose up -d` → polls Postgres, Qdrant, Temporal and the `default` namespace (60s timeout) → `uv sync` → `alembic upgrade head` → starts the worker in the background (skipped if already running) and checks it is still alive after 10s → prints URLs → runs discovery (blocks until the workflow finishes) |
+| `make stop` | Stops the worker via `.run/worker.pid` (cleans a stale PID file), then `docker compose stop` |
+| `make down` | `make stop` + `docker compose down` (never `-v`; data is kept) |
+| `make worker` | Worker in the foreground (debugging) |
+| `make discover` | Only trigger discovery (stack must be running) |
+| `make logs` / `make status` | Tail `.run/worker.log` / `docker compose ps` + worker state |
+| `make pending` | List jobs awaiting approval |
+| `make approve ID=<id>` / `make reject ID=<id>` | Send a decision; optional `NOTE="..."` |
+
+Notes:
+
+- `.run/` (worker PID + log) is gitignored.
+- `claude` comes from nvm's Node. If `make start` says it is missing, run
+  `nvm alias default 20` and open a new terminal.
+
 ## Running
 
 | Task | Command |
@@ -71,6 +94,14 @@ variables, so one file configures both.
 | Semantic search with free text | `uv run python -m scripts.search_jobs "django rest api fintech"` |
 | Save one job detail page's HTML to `/tmp/naukri_job_page.html` | `uv run python -m scripts.inspect_job_page` |
 | Embedding demo (no DB) | `uv run python -m scripts.embedding_demo` |
+| Temporal worker (runs both workflows + activities) | `uv run python -m app.workflows.worker` |
+| Start discovery workflow (needs worker; starts one `job-{id}` workflow per new job) | `uv run python -m scripts.start_discovery --keyword "Python" --location "Noida"` |
+| Start the application workflow for one existing job | `uv run python -m scripts.start_job_workflow <job_id>` |
+| List jobs awaiting your approval | `uv run python -m scripts.list_pending` |
+| Approve / reject a job (apply is DRY-RUN only) | `uv run python -m scripts.decide_job <job_id> yes\|no ["note"]` |
+| Log in to Naukri once and save the encrypted session (headed) | `uv run python -m scripts.naukri_login` |
+| Inspect a job's apply button, logged in (saves to `artifacts/inspect/<id>/`) | `uv run python -m scripts.inspect_apply_flow <job_id>` |
+| Same, and click Apply once then stop (never submits) | `uv run python -m scripts.inspect_apply_flow <job_id> --click` |
 | Unit tests | `uv run pytest` |
 | New migration | `uv run alembic revision --autogenerate -m "message"` |
 | Stop infra (keep data) | `docker compose down` |
@@ -82,6 +113,8 @@ Useful endpoints: Qdrant dashboard at <http://localhost:6333/dashboard>; Postgre
 ## Environment variables
 
 All settings are defined in `app/config.py` and can be set in `.env` or the environment.
+Unknown variables in `.env` are ignored (`extra="ignore"`), because `.env` is shared with
+docker-compose (e.g. `TEMPORAL_DB_*` used only by the Temporal containers).
 
 | Variable | Default | Used by | Notes |
 |---|---|---|---|
@@ -94,12 +127,17 @@ All settings are defined in `app/config.py` and can be set in `.env` or the envi
 | `BROWSER_HEADLESS` | `false` | Naukri source | `true` for headless Chromium |
 | `BROWSER_TIMEOUT_MS` | `20000` | Naukri source | Playwright default timeout |
 | `DETAIL_PAGE_DELAY_SECONDS` | `3.0` | — | **Defined but unused** (reserved for detail-page scraping) |
+| `NAUKRI_STATE_KEY` | *(none)* | `session_store` | Fernet key for the saved Naukri session; `SecretStr`. Not in `.env.example` yet |
+| `NAUKRI_STATE_PATH` | `secrets/naukri_state.enc` | `session_store` | Encrypted session file (gitignored folder) |
 | `POSTGRES_USER` | `job_agent` | app, compose | |
 | `POSTGRES_PASSWORD` | *(empty)* | app, compose | `SecretStr`; required by the Postgres container |
 | `POSTGRES_DB` | `job_agent` | app, compose | |
 | `POSTGRES_HOST` | `localhost` | app | |
 | `POSTGRES_PORT` | `5433` | app | Compose maps host 5433 → container 5432 |
 | `QDRANT_URL` | `http://localhost:6333` | ranker, scripts | |
+| `TEMPORAL_ADDRESS` | `localhost:7233` | worker, `start_discovery` | Temporal frontend (gRPC) |
+| `TEMPORAL_NAMESPACE` | `default` | worker, `start_discovery` | |
+| `TEMPORAL_TASK_QUEUE` | `job-agent` | worker, `start_discovery` | Worker and starter must use the same queue |
 | `X_CLIENT_ID` | *(none)* | — | Leftover from the MCP experiment; unused by the app |
 | `X_CLIENT_SECRET` | *(none)* | — | Leftover; unused. Remove ([12](12-roadmap-and-status.md#known-issues)) |
 
@@ -111,8 +149,11 @@ runs headed with a 20 s timeout.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `ModuleNotFoundError: No module named 'claude_agent_sdk'` | `uv sync` removes packages not in the lockfile | `uv pip install claude-agent-sdk mcp` (until declared in `pyproject.toml`) |
+| `ModuleNotFoundError: No module named 'claude_agent_sdk'` | Environment out of date with `uv.lock` | `uv sync` |
 | `FileNotFoundError: Profile file not found: profile.yaml` | No profile | `cp profile.example.yaml profile.yaml` |
+| `NAUKRI_STATE_KEY is not set` / `No saved session` / `Cannot decrypt` | Key missing, never logged in, or key changed | Generate a key (setup step 4), then `uv run python -m scripts.naukri_login` |
+| `Session expired` from `inspect_apply_flow` | Naukri logged the session out | `uv run python -m scripts.naukri_login` |
+| Login script says "Not logged in" although you are | `LOGGED_IN_MARKER` selector is unverified | Inspect the header HTML and fix `LOGGED_IN_MARKER` in `app/browser/naukri_browser.py` |
 | Postgres container exits / "superuser password is not specified" | `POSTGRES_PASSWORD` missing in `.env` | Add `POSTGRES_*` to `.env`, `docker compose up -d` |
 | `connection refused` on port 5433 | Compose not running | `docker compose up -d`; check `docker compose ps` |
 | `password authentication failed` | `.env` changed after the volume was created | Use the original password, or `docker compose down -v` (deletes data) |

@@ -1,7 +1,10 @@
 # 03 — Workflows
 
-> **Status: Planned.** No Temporal code exists yet. This document is the design the implementation
-> must follow. Section [Current flow](#current-flow-built) describes what runs today.
+> **Status: In progress.** On Temporal today: `JobDiscoveryWorkflow` (search + save, starts one child
+> per new job) and `JobApplicationWorkflow` (evaluate → human approval → **dry-run** apply) — see
+> [Discovery workflow](#discovery-workflow-built) and [Application workflow](#application-workflow-built-dry-run).
+> Sections from [Target workflows](#target-workflows) on are the remaining design.
+> [Current flow](#current-flow-built) describes the older all-in-one pipeline in `main.py`.
 
 ## Current flow (Built)
 
@@ -34,6 +37,109 @@ sequenceDiagram
         P->>R: save_match(job_id, ...)
     end
     P-->>M: ranked JobMatchItems (printed)
+```
+
+## Discovery workflow (Built)
+
+`app/workflows/` — finds and stores jobs, then hands each **new** job to its own
+[application workflow](#application-workflow-built-dry-run).
+
+| Piece | File | What it does |
+|---|---|---|
+| `JobDiscoveryWorkflow.run(keyword, location)` | `job_discovery_workflow.py` | Calls `discover_jobs`, then `save_jobs` (skipped if nothing found), then starts one child `JobApplicationWorkflow` (id `job-{id}`, `ParentClosePolicy.ABANDON`) per new job id. Returns `{"found": N, "new": M}`. |
+| `discover_jobs(keyword, location) -> list[Job]` | `activities.py` | Wraps `NaukriJobSource.get_jobs`. start-to-close **3 min**. |
+| `save_jobs(jobs) -> list[int]` | `activities.py` | Own `SessionLocal` session; `JobRepository.save_jobs(source="naukri")` + `get_ids_by_urls`; returns the ids of the new jobs. start-to-close **30 s**. |
+| Client | `client.py` | `connect_client()` — the only way to connect; always uses `pydantic_data_converter`. |
+| Worker | `worker.py` | Registers both workflows + all activities on `TEMPORAL_TASK_QUEUE`, `max_concurrent_activities=3` (caps parallel LLM / browser work); logs `worker_started`. |
+| Starter | `scripts/start_discovery.py` | Starts the workflow with ID `discovery-{keyword}-{location}` (slugified), waits, prints the result. |
+
+- **Retry policy** (all activities, `app/workflows/retry.py`): max 3 attempts, initial interval 10 s, backoff 2.0.
+- **Payloads are our Pydantic models** (`Job`, `JobMatchItem`, `JobStatus`) via
+  `temporalio.contrib.pydantic.pydantic_data_converter`. Worker, scripts and tests must all use it.
+- **ABANDON** lets discovery complete while its children keep waiting (up to 3 days) for approval.
+- **Determinism:** activities are imported inside `workflow.unsafe.imports_passed_through()`; all
+  browser and DB I/O stays in activities.
+- **Workflow ID** is stable per search, so a second start while one is running fails with
+  `WorkflowAlreadyStartedError` (the script prints a message). A finished run can be started again.
+- **Tests:** `tests/workflows/test_job_discovery_workflow.py` uses `WorkflowEnvironment.start_time_skipping()`
+  with fake activities registered under the real names and a stub child workflow (no browser, no DB).
+- **Known gap:** if `save_jobs` commits but the activity fails before returning, the retry sees those
+  jobs as "already seen" and no child is started for them; start them with `scripts/start_job_workflow.py`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as scripts/start_discovery.py
+    participant T as Temporal server
+    participant W as JobDiscoveryWorkflow
+    participant D as discover_jobs
+    participant V as save_jobs
+    S->>T: start discovery-{keyword}-{location}
+    T->>W: run(keyword, location)
+    W->>D: execute (3 min, 3 attempts)
+    D-->>W: list[Job]
+    alt jobs found
+        W->>V: execute(jobs) (30 s, 3 attempts)
+        V-->>W: new job ids
+        loop each new id
+            W->>T: start child job-{id} (ABANDON)
+        end
+    end
+    W-->>S: {"found": N, "new": M}
+```
+
+## Application workflow (Built, dry-run)
+
+`JobApplicationWorkflow.run(job_id) -> str` in `app/workflows/job_application_workflow.py`,
+workflow id **`job-{job_id}`**. Started by discovery (child) or `scripts/start_job_workflow.py`.
+Returns the final status. **Apply is DRY-RUN only**: `apply_job_dry_run` logs what it would do.
+
+| Activity | Reuses | Timeout | Result |
+|---|---|---|---|
+| `load_job(job_id)` | `JobRepository.get_job` | 30 s | `Job` |
+| `filter_job(job)` | `JobFilterService.filter_jobs` | 30 s | `bool` |
+| `semantic_score(job_id, job)` | `JobRanker.rank(..., limit=1)` (run in a thread; embedder cached per worker) | 1 min | `float`, or `None` below `MIN_SCORE` 0.7 |
+| `match_job(job)` | `JobMatchService` + `JobScoreService` + `JobMatchLevelService` | 2 min | `JobMatchItem` |
+| `save_match(job_id, item)` | `JobRepository.save_match` (upsert) | 30 s | — |
+| `update_job_status(job_id, status)` | `JobRepository.update_status` | 30 s | — |
+| `apply_job_dry_run(job_id)` | `JobRepository.get_job`, logs `apply_dry_run` | 30 s | message |
+
+All use the shared retry policy (max 3 attempts). The profile is loaded inside activities from
+`settings.PROFILE_PATH` on every call.
+
+- **Signal** `decide(approved: bool, note: str = "")`. Ignored (logged) unless the status is
+  `awaiting_approval` and no decision was made yet, so nothing is approved early.
+- **Query** `current_status() -> str`.
+- **Approval timeout: 3 days** (`workflow.wait_condition`). On timeout → `expired`. Silence never means yes.
+- Only `strong` and `potential` matches wait for approval; `weak` ends as `filtered_out`.
+- Every status change goes through the `update_job_status` activity; the workflow keeps only an
+  in-memory copy for the query.
+- If an activity gives up after its retries, the workflow sets `failed` and then fails (visible in the UI).
+- **Scripts:** `scripts/list_pending.py` (jobs in `awaiting_approval` with LLM score + level),
+  `scripts/decide_job.py <job_id> yes|no [note]` (checks status via the query, then signals),
+  `scripts/start_job_workflow.py <job_id>` (for jobs saved before workflows existed).
+- **Tests:** `tests/workflows/test_job_application_workflow.py` — approved, rejected,
+  3-day timeout → expired, weak → filtered_out (time-skipping server, fake activities).
+
+```mermaid
+stateDiagram-v2
+    [*] --> discovered: save_jobs
+    discovered --> filtered_out: filter_job false
+    discovered --> filtered_out: semantic_score None
+    discovered --> shortlisted: passes filter + score ≥ 0.7
+    shortlisted --> matched: match_job + save_match
+    matched --> filtered_out: level weak
+    matched --> awaiting_approval: level strong / potential
+    awaiting_approval --> approved: decide(yes)
+    awaiting_approval --> rejected: decide(no)
+    awaiting_approval --> expired: no decision in 3 days
+    approved --> applied_dry_run: apply_job_dry_run
+    shortlisted --> failed: activity retries exhausted
+    filtered_out --> [*]
+    rejected --> [*]
+    expired --> [*]
+    applied_dry_run --> [*]
+    failed --> [*]
 ```
 
 ## Target workflows
@@ -70,8 +176,7 @@ Workflow code only calls activities, timers and signals; all I/O is in activitie
 - Signals: `approve(approved_by, note)`, `reject(reason)`.
 - Query: `get_state()` → current status, match summary, deadline.
 - Timeout: `await workflow.wait_condition(lambda: decision is not None, timeout=APPROVAL_TIMEOUT)`.
-  - **`APPROVAL_TIMEOUT` = 72 h — placeholder, to be decided** ([open question](12-roadmap-and-status.md#open-questions)).
-  - On timeout the job moves to `rejected` with `reason = "approval_timeout"`. Silence never means yes.
+  - **Built:** `APPROVAL_TIMEOUT` = 3 days; on timeout the job moves to `expired`. Silence never means yes.
 - The API sends the signal by workflow ID `job-{job_id}` after authenticating the user.
 - The approval decision (who, when, note) is written to `applications` before `submit_application`
   is scheduled. `submit_application` asserts that record exists.
@@ -135,13 +240,14 @@ stateDiagram-v2
 
 | State | Meaning | Stored as (planned) | Exists today? |
 |---|---|---|---|
-| `discovered` | Row in `jobs` from a search card | `jobs.status` | Implicit (any `jobs` row) |
+| `discovered` | Row in `jobs` from a search card | `jobs.status` | Yes (default) |
 | `details_fetched` | Detail page scraped, full description saved | `jobs.status` | No |
-| `filtered_out` | Failed keyword filter or semantic threshold | `jobs.status` | **No — these jobs are re-processed every run** |
-| `shortlisted` | Selected for LLM evaluation | `jobs.status` | No |
-| `matched` | LLM result + score saved | `jobs.status` + `job_matches` row | Implicit (`job_matches` row) |
-| `awaiting_approval` | Application workflow waiting for signal | `applications.status` | No |
-| `approved` / `rejected` | Human decision (or timeout) recorded | `applications.status` | No (CLI prototype only, not persisted) |
+| `filtered_out` | Failed keyword filter, semantic threshold, or `weak` LLM level | `jobs.status` | Yes (workflow path; `main.py` still re-processes) |
+| `shortlisted` | Selected for LLM evaluation | `jobs.status` | Yes (workflow path) |
+| `matched` | LLM result + score saved | `jobs.status` + `job_matches` row | Yes (workflow path; migration backfilled old matches) |
+| `awaiting_approval` | Application workflow waiting for signal | `jobs.status` today (`applications.status` planned) | Yes |
+| `approved` / `rejected` / `expired` | Human decision, or 3-day timeout | `jobs.status` today (`applications.status` planned) | Yes (note is not persisted yet) |
+| `applied_dry_run` | Dry-run apply logged | `jobs.status` | Yes |
 | `applying` / `applied` / `failed` | Submission in progress / done / errored | `applications.status` | No |
 
 Rules:

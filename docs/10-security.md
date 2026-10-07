@@ -42,16 +42,23 @@ Do not copy the values into issues, PRs, chats or docs while doing this.
 
 ## Browser session
 
-Applying needs a logged-in Naukri session ([06](06-browser-automation.md#session-reuse-via-storage_state-planned)).
-All Planned:
+Applying needs a logged-in Naukri session ([06](06-browser-automation.md#session-reuse-via-storage_state-built),
+[ADR-014](adr/ADR-014-encrypted-naukri-session.md)). Built:
 
-- The system never stores the Naukri **password**. The user logs in manually in a headed browser.
-- The saved `storage_state` JSON (cookies + localStorage) grants full account access. Store it:
-  - in `.secrets/` (gitignored), file mode `600`;
-  - **encrypted at rest** with a key from `SESSION_ENCRYPTION_KEY` (e.g. Fernet from `cryptography`,
-    or `age`); decrypted into memory only when creating the browser context;
-  - never uploaded to MinIO, never sent to the LLM, never logged.
-- On session expiry, delete the file and re-login; don't try to refresh automatically.
+- The system never stores the Naukri **password**. The user logs in manually in a headed browser
+  (`scripts/naukri_login.py`).
+- The saved `storage_state` (cookies + localStorage) grants full account access. It is stored:
+  - at `secrets/naukri_state.enc` (`secrets/` is gitignored), folder mode `700`, file mode `600`;
+  - **encrypted at rest** with Fernet using `NAUKRI_STATE_KEY` (`SecretStr`, from `.env`);
+    decrypted into memory only when creating the browser context;
+  - never logged: `session_store` logs only cookie count, domains and origin count.
+- Never uploaded anywhere or sent to the LLM (Planned rule for MinIO / LLM code).
+- On session expiry, re-run the login script; no automatic refresh.
+- Losing `NAUKRI_STATE_KEY` only means logging in again; rotating it = new key + new login.
+
+Inspection artifacts (`artifacts/inspect/<job_id>/`, HTML + screenshots of logged-in pages) contain
+PII and are gitignored. `answers.yaml` (application answers: CTC, notice period…) is gitignored;
+only `answers.example.yaml` is committed.
 
 ## PII in the candidate profile and resume
 
@@ -79,7 +86,7 @@ Ollama fallback keeps data fully local.
 | Never log | Why | Current state |
 |---|---|---|
 | Passwords, tokens, API keys, `SecretStr` values, full DB URLs | Credential leak | OK |
-| `storage_state` contents, cookies, auth headers | Account takeover | n/a yet |
+| `storage_state` contents, cookies, auth headers | Account takeover | OK (`session_store` logs counts/domains only; tested) |
 | Candidate name, email, phone, address | PII | **Violated**: `profile_loaded` logs `name=candidate.name` (`main.py:23`, `app/agent/agent.py:29-33`) |
 | Full prompts or full LLM responses at INFO or above | Contain profile PII | OK in `main.py`; `app/agent/agent.py:80` logs every SDK message at DEBUG — keep DEBUG off in shared logs |
 | Resume text, form field values | PII | n/a yet |

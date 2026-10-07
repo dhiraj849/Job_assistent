@@ -53,6 +53,7 @@ Used in every document and diagram.
 | [011](adr/ADR-011-modular-monolith.md) | Modular monolith | Built |
 | [012](adr/ADR-012-nextjs-dashboard.md) | Next.js dashboard (later) | Planned |
 | [013](adr/ADR-013-minio-artifacts.md) | MinIO for artifacts | Planned |
+| [014](adr/ADR-014-encrypted-naukri-session.md) | Encrypted Naukri session (Fernet) | Built |
 
 ## Conventions
 

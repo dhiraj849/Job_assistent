@@ -6,7 +6,8 @@ holds derived vectors keyed by `jobs.id` and can be rebuilt from Postgres
 
 ## Current tables (Built)
 
-Defined in `app/db/models.py`, created by migrations `e38fb9a63e38` (jobs) and `6fc31f68061a` (job_matches).
+Defined in `app/db/models.py`, created by migrations `e38fb9a63e38` (jobs), `6fc31f68061a` (job_matches) and
+`b5d33dd745b3` (`jobs.status`, `jobs.status_updated_at`).
 
 ```mermaid
 erDiagram
@@ -23,6 +24,8 @@ erDiagram
         jsonb skills "list of tag strings"
         timestamptz first_seen_at "default now()"
         timestamptz last_seen_at "default now(), bumped on re-sighting"
+        varchar_30 status "indexed, default discovered (JobStatus)"
+        timestamptz status_updated_at "default now()"
     }
     job_matches {
         int id PK
@@ -45,9 +48,19 @@ Notes on current behaviour:
 
 - `JobRepository.save_jobs` inserts new URLs and updates `last_seen_at` for known URLs, in one commit
   (`app/db/job_repository.py:19`). Jobs without a URL are skipped with a warning.
-- "Unmatched" = no `job_matches` row and `last_seen_at` within 14 days (`app/db/job_repository.py:86`).
-  Because there is no status column, jobs that were filtered out or ranked below threshold are loaded
-  again on every run ([known issue](12-roadmap-and-status.md#known-issues)).
+- "Unmatched" = no `job_matches` row and `last_seen_at` within 14 days (`get_unmatched_jobs_with_ids`).
+  `main.py` still uses this query and ignores `jobs.status`, so jobs it filtered out or ranked below
+  threshold are loaded again on every run ([known issue](12-roadmap-and-status.md#known-issues)).
+- `jobs.status` is a plain `String(30)`, not a DB enum, so adding a value needs no migration. Allowed
+  values live in one place: `JobStatus` (`app/models/job_status.py`): `discovered`, `filtered_out`,
+  `shortlisted`, `matched`, `awaiting_approval`, `approved`, `rejected`, `expired`,
+  `applied_dry_run`, `failed`. Only the Temporal workflows change it, through
+  `JobRepository.update_status` (which also sets `status_updated_at`). The migration backfilled
+  `matched` for jobs that already had a `job_matches` row.
+- `JobRepository.save_match` is an upsert (`ON CONFLICT (job_id) DO UPDATE`): a retried activity or a
+  re-run workflow overwrites the match, and the latest evaluation wins.
+- `JobRepository.get_pending_approvals()` joins `jobs` (status `awaiting_approval`) with `job_matches`
+  for `scripts/list_pending.py`.
 - `job_matches.job_id` is `UNIQUE` → one evaluation per job, globally. Correct for one user; wrong
   once there are multiple users or profile versions.
 - No `ON DELETE` behaviour on the FK; deleting a job with a match fails.
@@ -59,6 +72,7 @@ Notes on current behaviour:
 |---|---|---|
 | `jobs` | PK `id` | migration |
 | `jobs` | UNIQUE `url` | migration |
+| `jobs` | `ix_jobs_status` on `status` | migration `b5d33dd745b3` |
 | `job_matches` | PK `id` | migration |
 | `job_matches` | UNIQUE `job_id` (also serves the join in `get_unmatched_jobs_with_ids`) | migration |
 
@@ -100,8 +114,6 @@ erDiagram
     }
     jobs {
         int id PK
-        varchar status "lifecycle state (single-user phase)"
-        timestamptz status_changed_at
         timestamptz details_fetched_at
     }
     job_matches {
@@ -153,7 +165,6 @@ Only new / changed columns are shown for `jobs` and `job_matches`.
 
 | Table | Index / constraint | Why |
 |---|---|---|
-| `jobs` | `(status)` | Load jobs by lifecycle state instead of anti-join. |
 | `jobs` | `(last_seen_at)` | Recency window. |
 | `job_matches` | UNIQUE `(user_id, job_id, profile_id, prompt_version)` replaces UNIQUE `(job_id)` | Multi-user and re-evaluation after prompt/profile changes. |
 | `applications` | UNIQUE `(user_id, job_id)` | Never two applications for the same job (mirrors workflow ID). |
@@ -189,8 +200,9 @@ Rules:
 
 - One logical change per revision; message in imperative form.
 - Never edit a migration that has been merged to `main`; add a new one.
-- Additive first: add nullable column → backfill in a separate step → add `NOT NULL`. Needed for
-  `jobs.status` (backfill `matched` where a `job_matches` row exists, else `discovered`).
+- Additive first: add nullable column → backfill in a separate step → add `NOT NULL`. Exception: a
+  column with a constant `server_default` (like `jobs.status`) can be added `NOT NULL` in one step on
+  Postgres, then backfilled with `op.execute` in the same revision.
 - Data migrations use `op.execute` with SQL, not ORM models (models change over time).
 - Replacing `UNIQUE(job_id)` on `job_matches` is a two-step migration: add `user_id` with a backfill
   to the single existing user, then swap constraints.
