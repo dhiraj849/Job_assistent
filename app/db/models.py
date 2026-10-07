@@ -5,6 +5,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.models.job_status import JobStatus
 
 
 class JobRecord(Base):
@@ -26,6 +27,14 @@ class JobRecord(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Plain string (not a DB enum) so adding a status needs no migration.
+    status: Mapped[str] = mapped_column(
+        String(30), index=True, server_default=JobStatus.DISCOVERED.value
+    )
+    status_updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

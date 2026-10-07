@@ -2,13 +2,28 @@ from datetime import timedelta
 
 import structlog
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import JobMatchRecord, JobRecord
 from app.models.job import Job
 from app.models.job_match import JobMatchResult
+from app.models.job_status import JobStatus
 
 logger = structlog.get_logger(__name__)
+
+
+def _to_job(record: JobRecord) -> Job:
+    """Turn a database row into the Job DTO used by services."""
+    return Job(
+        title=record.title,
+        company=record.company,
+        location=record.location or "",
+        description=record.description or "",
+        experience=record.experience,
+        skills=record.skills or [],
+        url=record.url,
+    )
 
 
 class JobRepository:
@@ -96,21 +111,7 @@ class JobRepository:
         )
         records = result.scalars().all()
 
-        jobs_with_ids = [
-            (
-                record.id,
-                Job(
-                    title=record.title,
-                    company=record.company,
-                    location=record.location or "",
-                    description=record.description or "",
-                    experience=record.experience,
-                    skills=record.skills or [],
-                    url=record.url,
-                ),
-            )
-            for record in records
-        ]
+        jobs_with_ids = [(record.id, _to_job(record)) for record in records]
 
         logger.info(
             "unmatched_jobs_loaded",
@@ -126,23 +127,63 @@ class JobRepository:
         overall_score: int,
         match_level: str,
     ) -> None:
-        """Save the LLM match result for one job."""
-        self.session.add(
-            JobMatchRecord(
-                job_id=job_id,
-                role_match=match.role_match,
-                skill_match=match.skill_match,
-                experience_match=match.experience_match,
-                overall_score=overall_score,
-                match_level=match_level,
-                matching_skills=match.matching_skills,
-                missing_skills=match.missing_skills,
-                strengths=match.strengths,
-                concerns=match.concerns,
-                recommendation=match.recommendation,
-            )
+        """Save the LLM match result for one job (latest evaluation wins).
+
+        Upsert, so a retried activity or a re-run workflow for the same job
+        does not fail on the unique job_id.
+        """
+        values = dict(
+            job_id=job_id,
+            role_match=match.role_match,
+            skill_match=match.skill_match,
+            experience_match=match.experience_match,
+            overall_score=overall_score,
+            match_level=match_level,
+            matching_skills=match.matching_skills,
+            missing_skills=match.missing_skills,
+            strengths=match.strengths,
+            concerns=match.concerns,
+            recommendation=match.recommendation,
         )
+        stmt = insert(JobMatchRecord).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[JobMatchRecord.job_id],
+            set_={k: v for k, v in values.items() if k != "job_id"},
+        )
+        await self.session.execute(stmt)
 
         await self.session.commit()
 
         logger.info("match_saved", job_id=job_id, overall_score=overall_score)
+
+    async def get_job(self, job_id: int) -> Job | None:
+        """Load one job by id, or None if it does not exist."""
+        record = await self.session.get(JobRecord, job_id)
+        return _to_job(record) if record else None
+
+    async def update_status(self, job_id: int, status: JobStatus) -> None:
+        """Set a job's lifecycle status and when it changed."""
+        await self.session.execute(
+            update(JobRecord)
+            .where(JobRecord.id == job_id)
+            .values(status=status.value, status_updated_at=func.now())
+        )
+        await self.session.commit()
+
+        logger.info("job_status_updated", job_id=job_id, status=status.value)
+
+    async def get_pending_approvals(self) -> list[tuple[int, str, str, int, str]]:
+        """Jobs waiting for a human decision: (id, title, company, score, level)."""
+        result = await self.session.execute(
+            select(
+                JobRecord.id,
+                JobRecord.title,
+                JobRecord.company,
+                JobMatchRecord.overall_score,
+                JobMatchRecord.match_level,
+            )
+            .join(JobMatchRecord, JobMatchRecord.job_id == JobRecord.id)
+            .where(JobRecord.status == JobStatus.AWAITING_APPROVAL.value)
+            .order_by(JobMatchRecord.overall_score.desc())
+        )
+        return [tuple(row) for row in result.all()]
