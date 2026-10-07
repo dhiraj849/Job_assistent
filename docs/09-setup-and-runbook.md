@@ -67,7 +67,8 @@ MAX_APPLIES_PER_DAY=10      # per IST calendar day; dry runs and live applies ar
 ```
 
 `APPLY_MODE` and `MAX_APPLIES_PER_DAY` are read by the `apply_job` activity at run time; restart the
-worker after changing `.env`.
+worker after changing `.env`. To confirm the mode without opening `.env`, check the startup line:
+`grep worker_started .run/worker.log` → `apply_mode=dry_run max_applies_per_day=10 ...`.
 
 ## One-command stack (Makefile)
 

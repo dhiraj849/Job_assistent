@@ -86,8 +86,8 @@ start: ## Start everything: infra, migrations, worker, discovery
 	  PYTHONUNBUFFERED=1 setsid nohup uv run python -m app.workflows.worker >> $(WORKER_LOG) 2>&1 < /dev/null &
 	  echo $$! > $(WORKER_PID)
 	  pid=$$(cat $(WORKER_PID))
-	  # Ready = still alive after 10s. We can't wait for the "worker_started"
-	  # line: under `python -m` its logger is "__main__", which drops INFO.
+	  # Ready = still alive after 10s. "worker_started" is logged before
+	  # polling begins, so being alive is the stronger check.
 	  for _ in $$(seq 1 10); do
 	    kill -0 "$$pid" 2>/dev/null || break
 	    sleep 1

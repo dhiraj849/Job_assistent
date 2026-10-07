@@ -15,7 +15,9 @@ from app.workflows.client import connect_client
 from app.workflows.job_application_workflow import JobApplicationWorkflow
 from app.workflows.job_discovery_workflow import JobDiscoveryWorkflow
 
-logger = structlog.get_logger(__name__)
+# Fixed name, not __name__: under `python -m` that is "__main__", which is
+# outside the "app" logger tree and its INFO lines get dropped.
+logger = structlog.get_logger("app.workflows.worker")
 
 
 async def main() -> None:
@@ -49,6 +51,10 @@ async def main() -> None:
         "worker_started",
         task_queue=settings.TEMPORAL_TASK_QUEUE,
         namespace=settings.TEMPORAL_NAMESPACE,
+        # Log the safety rails so "is this worker live?" is answered by the
+        # log, not by reading .env.
+        apply_mode=settings.APPLY_MODE,
+        max_applies_per_day=settings.MAX_APPLIES_PER_DAY,
     )
     await worker.run()
 
