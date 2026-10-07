@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./uv.lock)",
+      "Read(./.venv/**)",
+      "Read(./site/**)",
+      "Read(./**/__pycache__/**)",
+      "Read(./temporal.db)"
+    ]
+  }
+}
