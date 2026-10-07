@@ -7,12 +7,14 @@ holds derived vectors keyed by `jobs.id` and can be rebuilt from Postgres
 ## Current tables (Built)
 
 Defined in `app/db/models.py`, created by migrations `e38fb9a63e38` (jobs), `6fc31f68061a` (job_matches) and
-`b5d33dd745b3` (`jobs.status`, `jobs.status_updated_at`) and `f734e9e72583` (applications).
+`b5d33dd745b3` (`jobs.status`, `jobs.status_updated_at`), `f734e9e72583` (applications) and
+`7a754c37777b` (job_decisions).
 
 ```mermaid
 erDiagram
     jobs ||--o| job_matches : "has at most one"
     jobs ||--o| applications : "has at most one"
+    jobs ||--o{ job_decisions : "logs"
     jobs {
         int id PK
         varchar_50 source "e.g. naukri"
@@ -56,6 +58,15 @@ erDiagram
         timestamptz created_at "default now()"
         timestamptz updated_at "default now(), set on every write"
     }
+    job_decisions {
+        int id PK
+        int job_id FK "jobs.id, indexed"
+        varchar_20 decision "approved | rejected | expired (CHECK)"
+        text note "default '', from the decide signal"
+        timestamptz decided_at "workflow.now() at the signal or timeout"
+        varchar_64 workflow_run_id UK "idempotency key, links to Temporal UI"
+        timestamptz created_at "default now()"
+    }
 ```
 
 Notes on current behaviour:
@@ -70,12 +81,18 @@ Notes on current behaviour:
   `shortlisted`, `matched`, `awaiting_approval`, `approved`, `rejected`, `expired`,
   `applied_dry_run`, `applied`, `needs_manual`, `failed` (`applied` / `needs_manual` were added
   without a migration). Only the Temporal workflows and their activities change it, through
-  `JobRepository.update_status` (which also sets `status_updated_at`). The migration backfilled
+  `JobRepository.update_status` (which also sets `status_updated_at`).
+  - **`applied` is terminal:** every `jobs.status` write (`_set_job_status`, used by `update_status`
+    and the combined commits) has `WHERE NOT EXISTS (live applied applications row)` unless the new
+    status is `applied`. A refused write returns False and logs `job_status_update_refused`. One
+    guarded `UPDATE`, so no check-then-write race. Defense in depth behind the workflow's
+    `is_applied_live` check ([03](03-workflows.md)). The migration backfilled
   `matched` for jobs that already had a `job_matches` row.
 - `applications` (`ApplicationRecord`, values in `ApplicationOutcome`, `app/models/application.py`) is
   the source of truth for applying; `jobs.status` only mirrors it. The workflow rewrites `jobs.status`
   (e.g. `approved`) before every apply, so `jobs.status` cannot prove a job was never applied.
-  - Written only through `JobRepository`: `record_approval` (row `pending` + `jobs.status=approved`),
+  - Written only through `JobRepository`: `record_approval` (row `pending` + `job_decisions` row +
+    `jobs.status=approved`),
     `save_apply_result` (final outcome + `jobs.status`), `record_manual_apply`
     (`scripts/mark_applied.py`) and `insert_application_if_missing` (`scripts/backfill_applications.py`).
     Each writes `applications` and `jobs` in **one commit**: both change or neither does.
@@ -87,6 +104,13 @@ Notes on current behaviour:
   - Jobs 23 and 25 (applied before the table existed) were backfilled by
     `scripts/backfill_applications.py`, with times taken from artifacts and Temporal history. A script,
     not a migration, because those facts only exist in the local database.
+- `job_decisions` (`JobDecisionRecord`, values in `Decision`, `app/models/decision.py`) is an
+  append-only log of what happened at the approval step: `approved` (`record_approval`), `rejected` /
+  `expired` (`record_decision`, same commit as `jobs.status`). Many rows per job are allowed (reject
+  now, re-run and approve later). Kept apart from `applications` on purpose: a row there means
+  "approved" and passes `ApplyService`'s approval check. `UNIQUE workflow_run_id` + `ON CONFLICT DO
+  NOTHING` make activity retries log a decision once. No backfill: older rejections exist only in
+  Temporal history. Read with `JobRepository.get_decisions(job_id)`.
 - The daily apply cap counts `applications` rows with `outcome='applied'`, the same `dry_run` and
   `applied_at` since IST midnight (`JobRepository.count_applied_since`). Applies are serialized with a
   Postgres advisory transaction lock (`JobRepository.lock_applies`, key `APPLY_LOCK_KEY`)
@@ -99,7 +123,7 @@ Notes on current behaviour:
   approval).
 - `job_matches.job_id` is `UNIQUE` → one evaluation per job, globally. Correct for one user; wrong
   once there are multiple users or profile versions.
-- No `ON DELETE` behaviour on the FKs; deleting a job with a match or an application fails (wanted for
+- No `ON DELETE` behaviour on the FKs; deleting a job with a match, an application or a decision fails (wanted for
   the audit trail).
 - The ORM declares `default=list` for JSONB columns (Python-side); the DB has no server default.
 
@@ -113,6 +137,7 @@ Notes on current behaviour:
 | `job_matches` | PK `id` | migration |
 | `job_matches` | UNIQUE `job_id` (also serves the join in `get_unmatched_jobs_with_ids`) | migration |
 | `applications` | PK `id`, UNIQUE `job_id` (`applications_job_id_key`) | migration `f734e9e72583` |
+| `job_decisions` | PK `id`, `ix_job_decisions_job_id`, UNIQUE `workflow_run_id` (`job_decisions_workflow_run_id_key`) | migration `7a754c37777b` |
 
 ### Constraints on `applications` (current)
 
@@ -123,6 +148,8 @@ Notes on current behaviour:
 | `ck_applications_reason` | `outcome NOT IN ('needs_manual','failed') OR reason <> ''` | A human must see what to do next. |
 | `ck_applications_applied_after_approval` | `applied_at >= approved_at` | Never applied before approval (passes while `applied_at` is NULL). |
 | NOT NULL `approved_at` | | A row exists only after a human approval. |
+
+`job_decisions` has `ck_job_decisions_decision`: `decision IN ('approved','rejected','expired')`.
 
 Missing: `jobs.last_seen_at` (filtered in the unmatched query). Fine at current volume (hundreds of rows).
 

@@ -99,13 +99,15 @@ yet verified ([06](06-browser-automation.md#live-apply-built-chatbot-selectors-n
 
 | Activity | Reuses | Timeout | Result |
 |---|---|---|---|
+| `is_applied_live(job_id)` | `JobRepository.is_applied_live` (reads `applications`) | 30 s | `bool` |
 | `load_job(job_id)` | `JobRepository.get_job` | 30 s | `Job` |
 | `filter_job(job)` | `JobFilterService.filter_jobs` | 30 s | `bool` |
 | `semantic_score(job_id, job)` | `JobRanker.rank(..., limit=1)` (run in a thread; embedder cached per worker) | 1 min | `float`, or `None` below `MIN_SCORE` 0.7 |
 | `match_job(job)` | `JobMatchService` + `JobScoreService` + `JobMatchLevelService` | 2 min | `JobMatchItem` |
 | `save_match(job_id, item)` | `JobRepository.save_match` (upsert) | 30 s | — |
-| `update_job_status(job_id, status)` | `JobRepository.update_status` | 30 s | — |
-| `record_approval(job_id, approved_at, note)` | `JobRepository.record_approval`: `applications` row `pending` + `jobs.status=approved`, one commit; leaves a job applied live untouched | 30 s | — |
+| `update_job_status(job_id, status)` | `JobRepository.update_status` (refused + `job_status_update_refused` warning for a job applied live, unless the status is `applied`) | 30 s | — |
+| `record_approval(job_id, approved_at, note)` | `JobRepository.record_approval`: `applications` row `pending` + `job_decisions` row `approved` + `jobs.status=approved`, one commit; leaves a job applied live untouched | 30 s | — |
+| `record_decision(job_id, decision, decided_at, note)` | `JobRepository.record_decision`: `job_decisions` row (`rejected` / `expired`) + `jobs.status`, one commit | 30 s | — |
 | `apply_job(job_id)` | `ApplyService` (`app/services/apply_service.py`) | 5 min | `ApplyResult` |
 | `apply_job_dry_run(job_id)` | `JobRepository.get_job`, logs `apply_dry_run` | 30 s | message — **old histories only** (pre-patch), still registered on the worker |
 
@@ -116,13 +118,20 @@ All except `apply_job` use the shared retry policy (max 3 attempts). `apply_job`
 - **Signal** `decide(approved: bool, note: str = "")`. Ignored (logged) unless the status is
   `awaiting_approval` and no decision was made yet, so nothing is approved early.
 - **Query** `current_status() -> str`.
-- **Approval timeout: 3 days** (`workflow.wait_condition`). On timeout → `expired`. Silence never means yes.
+- **Already applied live → stop.** The first step is `is_applied_live`: if `applications` has a live
+  `applied` row, the workflow returns `applied` at once (no `load_job`, no LLM, no status write, no
+  approval prompt). Protects re-runs, e.g. `scripts/start_job_workflow.py` on an applied job.
+- **Approval timeout: 3 days** (`workflow.wait_condition`). On timeout → `expired`, logged by
+  `record_decision` with `decided_at = workflow.now()` at the timeout. Silence never means yes.
 - Only `strong` and `potential` matches wait for approval; `weak` ends as `filtered_out`.
 - Every status change goes through an activity (`update_job_status`, `record_approval`, `apply_job`);
   the workflow keeps only an in-memory copy for the query.
 - **Approval is recorded** by `record_approval` with the note and the decision time. The time is
   `workflow.now()` taken in the signal handler: deterministic on replay, and the real decision time
-  even if the activity runs later. Rejections are not recorded in `applications`.
+  even if the activity runs later. A rejection is logged by `record_decision` (note + decision time)
+  in `job_decisions`, never in `applications` (a row there means "approved").
+- **Run id:** `record_approval` / `record_decision` read `activity.info().workflow_run_id` and store
+  it as the `job_decisions` idempotency key, so a retried activity logs the decision once.
 - If an activity gives up after its retries, the workflow sets `failed` and then fails (visible in the UI).
 - **Scripts:** `scripts/list_pending.py` (jobs in `awaiting_approval` with LLM score + level, then
   `needs_manual` / `failed` jobs with their reason), `scripts/mark_applied.py <job_id> --reason`
@@ -131,13 +140,16 @@ All except `apply_job` use the shared retry policy (max 3 attempts). `apply_job`
   `scripts/start_job_workflow.py <job_id>` (for jobs saved before workflows existed).
 - **Tests:** `tests/workflows/test_job_application_workflow.py` — approved, rejected,
   3-day timeout → expired, weak → filtered_out, needs_manual, cap wait + retry, cap → expired after
-  3 days, `record_approval` gets the note and decision time (and is not called on reject), and replay
-  of the pre-`apply-job-v1`, pre-`record-approval-v1` and current histories (time-skipping server, fake
-  activities).
+  3 days, `record_approval` gets the note and decision time (and is not called on reject),
+  `record_decision` gets the rejection note/time and the timeout time, an already-applied job never
+  reaches `load_job` / `match_job`, and replay of the pre-`apply-job-v1`, pre-`record-approval-v1`,
+  pre-`record-decision-v1` and current histories, plus a real one (`record_approval_v1.json`, job-38
+  from the local server) (time-skipping server, fake activities).
 
 ```mermaid
 stateDiagram-v2
     [*] --> discovered: save_jobs
+    discovered --> applied: is_applied_live true (re-run)
     discovered --> filtered_out: filter_job false
     discovered --> filtered_out: semantic_score None
     discovered --> shortlisted: passes filter + score ≥ 0.7
@@ -145,8 +157,8 @@ stateDiagram-v2
     matched --> filtered_out: level weak
     matched --> awaiting_approval: level strong / potential
     awaiting_approval --> approved: decide(yes) + record_approval
-    awaiting_approval --> rejected: decide(no)
-    awaiting_approval --> expired: no decision in 3 days
+    awaiting_approval --> rejected: decide(no) + record_decision
+    awaiting_approval --> expired: no decision in 3 days + record_decision
     approved --> applied_dry_run: apply_job (dry_run)
     approved --> applied: apply_job (live) / already applied
     approved --> needs_manual: company site / unknown question
@@ -217,6 +229,12 @@ The switch from `apply_job_dry_run` to `apply_job` is guarded by `workflow.patch
 - `workflow.patched("record-approval-v1")` guards the switch from `update_job_status(APPROVED)` to
   `record_approval` the same way; `tests/workflows/histories/apply_job_v1.json` (recorded with the
   code before it) is replayed in a test.
+- `workflow.patched("skip-if-applied-v1")` guards the `is_applied_live` check at the very start of
+  `run`. Open workflows started earlier have `load_job` as their first command, so on replay the
+  patch returns `False` and they skip the check.
+- `workflow.patched("record-decision-v1")` guards `update_job_status(REJECTED/EXPIRED)` →
+  `record_decision`; `rejected_v1.json` / `expired_v1.json` (recorded with the code before it) replay
+  in a test.
 - Removal (later): once no pre-patch workflow is open, replace `patched()` with
   `workflow.deprecate_patch("apply-job-v1")` and delete the old branch; after those workflows are
   gone too, remove the call and stop registering `apply_job_dry_run`.
@@ -326,7 +344,7 @@ stateDiagram-v2
 | `matched` | LLM result + score saved | `jobs.status` + `job_matches` row | Yes (workflow path; migration backfilled old matches) |
 | `awaiting_approval` | Application workflow waiting for signal | `jobs.status` | Yes |
 | `approved` | Human said yes | `jobs.status` + `applications` row `pending` (time + note) | Yes |
-| `rejected` / `expired` | Human said no, or 3-day timeout | `jobs.status` | Yes (rejection note not persisted) |
+| `rejected` / `expired` | Human said no, or 3-day timeout | `jobs.status` + `job_decisions` row (note + time) | Yes |
 | `applied_dry_run` | Dry-run apply logged | `jobs.status` + `applications` `applied`, `dry_run=true` | Yes |
 | `applied` | Applied for real (or Naukri already showed "Applied", or `mark_applied`) | `jobs.status` + `applications` `applied` | Yes |
 | `needs_manual` | Approved, but a human must finish it (company site, unknown question) | `jobs.status` + `applications` (reason) | Yes |

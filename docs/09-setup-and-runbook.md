@@ -62,7 +62,7 @@ variables, so one file configures both.
 Apply safety settings (optional; defaults shown):
 
 ```dotenv
-APPLY_MODE=dry_run          # dry_run | live — live is not implemented yet (Task 3) and ends as "failed"
+APPLY_MODE=dry_run          # dry_run (no browser, nothing clicked) | live (really applies on Naukri; chatbot selectors not verified yet, see 06)
 MAX_APPLIES_PER_DAY=10      # per IST calendar day; dry runs and live applies are counted separately
 ```
 
