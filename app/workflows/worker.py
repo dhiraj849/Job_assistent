@@ -38,6 +38,7 @@ async def main() -> None:
             activities.match_job,
             activities.save_match,
             activities.update_job_status,
+            activities.is_applied_live,
             activities.record_approval,
             activities.apply_job,
             activities.apply_job_dry_run,  # old histories (pre "apply-job-v1")

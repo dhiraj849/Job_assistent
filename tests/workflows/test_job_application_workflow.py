@@ -48,14 +48,24 @@ def make_activities(
     statuses: list[str],
     applied: list[int],
     apply_results: list[ApplyResult],
+    applied_live: bool = False,
+    calls: list[str] | None = None,
 ):
     """Fake activities; statuses/applied record what the workflow did.
 
     apply_job returns apply_results one by one (last one repeats).
+    applied_live is what the applications table says; calls logs
+    load_job / match_job (the LLM) runs.
     """
+    calls = calls if calls is not None else []
+
+    @activity.defn(name="is_applied_live")
+    async def is_applied_live(job_id: int) -> bool:
+        return applied_live
 
     @activity.defn(name="load_job")
     async def load_job(job_id: int) -> Job:
+        calls.append("load_job")
         return JOB
 
     @activity.defn(name="filter_job")
@@ -68,6 +78,7 @@ def make_activities(
 
     @activity.defn(name="match_job")
     async def match_job(job: Job) -> JobMatchItem:
+        calls.append("match_job")
         return JobMatchItem(
             job=job,
             match=JobMatchResult(
@@ -97,8 +108,8 @@ def make_activities(
         applied.append(job_id)
         return apply_results[min(len(applied), len(apply_results)) - 1]
 
-    return [load_job, filter_job, semantic_score, match_job, save_match,
-            update_job_status, record_approval, apply_job]
+    return [is_applied_live, load_job, filter_job, semantic_score, match_job,
+            save_match, update_job_status, record_approval, apply_job]
 
 
 async def wait_for_status(handle: WorkflowHandle, expected: str) -> None:
@@ -113,6 +124,8 @@ async def run_workflow(
     match_level: str,
     decision: bool | None,
     apply_results: list[ApplyResult] = [DRY_RUN_APPLIED],
+    applied_live: bool = False,
+    calls: list[str] | None = None,
 ):
     """Run one workflow. decision=None means nobody answers (timeout).
 
@@ -120,6 +133,9 @@ async def run_workflow(
     """
     statuses: list[str] = []
     applied: list[int] = []
+    activities = make_activities(
+        match_level, statuses, applied, apply_results, applied_live, calls
+    )
 
     async with await WorkflowEnvironment.start_time_skipping(
         data_converter=pydantic_data_converter
@@ -128,7 +144,7 @@ async def run_workflow(
             env.client,
             task_queue=TASK_QUEUE,
             workflows=[JobApplicationWorkflow],
-            activities=make_activities(match_level, statuses, applied, apply_results),
+            activities=activities,
         ):
             handle = await env.client.start_workflow(
                 JobApplicationWorkflow.run,
@@ -209,10 +225,10 @@ def test_pre_patch_history_replays_on_old_path():
 def test_patched_history_replays_on_new_path():
     _, _, _, history = asyncio.run(run_workflow("strong", decision=True))
 
-    # The new path leaves patch markers (approval + apply) and never
-    # schedules the old activities.
+    # The new path leaves patch markers (skip-if-applied + approval + apply)
+    # and never schedules the old activities.
     markers = [e for e in history.events if e.HasField("marker_recorded_event_attributes")]
-    assert [m.marker_recorded_event_attributes.marker_name for m in markers] == ["core_patch"] * 2
+    assert [m.marker_recorded_event_attributes.marker_name for m in markers] == ["core_patch"] * 3
     assert "apply_job_dry_run" not in history.to_json()
     assert '"approved"' not in history.to_json()  # no update_job_status(APPROVED)
 
@@ -283,3 +299,41 @@ def test_rejection_records_no_approval():
     _, _, _, history = asyncio.run(run_workflow("potential", decision=False))
 
     assert _scheduled_inputs(history, "record_approval") == []
+
+
+# --- Gap #14: a job already applied live --------------------------------
+
+
+def test_already_applied_job_stops_before_the_llm():
+    calls: list[str] = []
+    result, statuses, applied, history = asyncio.run(
+        run_workflow("strong", decision=None, applied_live=True, calls=calls)
+    )
+
+    assert result == "applied"
+    assert calls == []  # no load_job, no match_job: no LLM money spent
+    assert statuses == []  # jobs.status is never rewritten
+    assert applied == []
+    asyncio.run(replayer().replay_workflow(history))
+
+
+def test_not_applied_job_runs_the_full_pipeline():
+    calls: list[str] = []
+    result, _, _, _ = asyncio.run(
+        run_workflow("strong", decision=True, applied_live=False, calls=calls)
+    )
+
+    assert result == "applied_dry_run"
+    assert calls == ["load_job", "match_job"]
+
+
+# record_approval_v1.json is a REAL history (job-38 on the local Temporal
+# server, 2026-10-07): started before "record-approval-v1", approved after it,
+# so it has the approval + apply markers but no "skip-if-applied-v1" marker.
+
+
+def test_real_record_approval_history_replays():
+    history = WorkflowHistory.from_json(
+        "job-38", (HISTORIES / "record_approval_v1.json").read_text()
+    )
+    asyncio.run(replayer().replay_workflow(history))

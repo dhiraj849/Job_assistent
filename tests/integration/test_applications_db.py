@@ -184,3 +184,52 @@ def test_manual_apply_records_row_and_status():
         assert await job_status(session, job_id) == "applied"
 
     run_in_rollback(test)
+
+
+# --- update_status guard: "applied" (live) is terminal --------------------
+
+
+def test_status_of_live_applied_job_is_never_rewritten():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_manual_apply(job_id, "by hand")
+        assert await repo.is_applied_live(job_id)
+
+        # What a re-started workflow (gap #14) or its failure handler would write.
+        for status in (JobStatus.SHORTLISTED, JobStatus.REJECTED, JobStatus.FAILED):
+            assert not await repo.update_status(job_id, status)
+        assert await job_status(session, job_id) == "applied"
+
+        # Syncing back TO applied stays allowed (ApplyService does this).
+        assert await repo.update_status(job_id, JobStatus.APPLIED)
+
+    run_in_rollback(test)
+
+
+def test_dry_run_apply_does_not_lock_the_status():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_approval(job_id, APPROVED_AT, "")
+        await repo.save_apply_result(
+            job_id, ApplicationOutcome.APPLIED, JobStatus.APPLIED_DRY_RUN, "dry", True, None
+        )
+
+        # A dry run must never block the real apply later.
+        assert not await repo.is_applied_live(job_id)
+        assert await repo.update_status(job_id, JobStatus.AWAITING_APPROVAL)
+        assert await job_status(session, job_id) == "awaiting_approval"
+
+    run_in_rollback(test)
+
+
+def test_guard_only_looks_at_its_own_job():
+    async def test(repo: JobRepository, session):
+        applied_job = await new_job(session)
+        other_job = await new_job(session)
+        await repo.record_manual_apply(applied_job, "by hand")
+
+        # The correlated EXISTS must match on job_id, not "any applied row".
+        assert not await repo.is_applied_live(other_job)
+        assert await repo.update_status(other_job, JobStatus.SHORTLISTED)
+
+    run_in_rollback(test)

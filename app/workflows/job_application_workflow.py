@@ -15,6 +15,7 @@ with workflow.unsafe.imports_passed_through():
         apply_job,
         apply_job_dry_run,
         filter_job,
+        is_applied_live,
         load_job,
         match_job,
         record_approval,
@@ -32,6 +33,8 @@ APPLY_TIMEOUT = timedelta(minutes=5)
 APPLY_PATCH = "apply-job-v1"
 # Version marker for update_job_status(APPROVED) -> record_approval.
 APPROVAL_PATCH = "record-approval-v1"
+# Version marker for the already-applied check at the start of _run.
+SKIP_APPLIED_PATCH = "skip-if-applied-v1"
 
 # If the daily cap is full, try again on this many following days, then give up:
 # an approval older than that is probably stale.
@@ -65,6 +68,20 @@ class JobApplicationWorkflow:
             raise
 
     async def _run(self, job_id: int) -> str:
+        # 0. A job applied live is done: a re-started workflow (e.g. via
+        # scripts.start_job_workflow) must not re-run the LLM, ask me again,
+        # or rewrite jobs.status. Behind a patch: in-flight histories started
+        # with load_job as their first command and must replay unchanged.
+        if workflow.patched(SKIP_APPLIED_PATCH):
+            already_applied = await workflow.execute_activity(
+                is_applied_live, job_id, start_to_close_timeout=DB_TIMEOUT, retry_policy=RETRY_POLICY
+            )
+            if already_applied:
+                # Read-only on purpose: applications is the source of truth,
+                # and the update_status guard keeps jobs.status at "applied".
+                self._status = JobStatus.APPLIED
+                return self._status.value
+
         job = await workflow.execute_activity(
             load_job, job_id, start_to_close_timeout=DB_TIMEOUT, retry_policy=RETRY_POLICY
         )

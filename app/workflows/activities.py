@@ -152,8 +152,17 @@ async def save_match(job_id: int, item: JobMatchItem) -> None:
 
 @activity.defn
 async def update_job_status(job_id: int, status: JobStatus) -> None:
+    # A refused write (job already applied live) is logged by the repository,
+    # not raised: retrying would never succeed, and the job's real state is fine.
     async with SessionLocal() as session:
         await JobRepository(session).update_status(job_id, status)
+
+
+@activity.defn
+async def is_applied_live(job_id: int) -> bool:
+    """True if applications says this job was really applied (not a dry run)."""
+    async with SessionLocal() as session:
+        return await JobRepository(session).is_applied_live(job_id)
 
 
 @activity.defn

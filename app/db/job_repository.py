@@ -24,6 +24,16 @@ _NOT_APPLIED_LIVE = not_(
 )
 
 
+def _applied_live_exists(job_id):
+    """EXISTS(a live-applied applications row for job_id); job_id may be a column."""
+    return (
+        select(ApplicationRecord.id)
+        .where(ApplicationRecord.job_id == job_id)
+        .where(~_NOT_APPLIED_LIVE)
+        .exists()
+    )
+
+
 class ApplicationNotWritableError(RuntimeError):
     """The applications row is missing (never approved) or already applied live."""
 
@@ -180,16 +190,35 @@ class JobRepository:
         record = await self.session.get(JobRecord, job_id)
         return _to_job(record) if record else None
 
-    async def update_status(self, job_id: int, status: JobStatus) -> None:
-        """Set a job's lifecycle status and when it changed."""
-        await self.session.execute(
+    async def update_status(self, job_id: int, status: JobStatus) -> bool:
+        """Set a job's lifecycle status and when it changed.
+
+        "applied" (live) is terminal: any other status is refused for such a
+        job (returns False). One UPDATE with the guard in its WHERE, so there
+        is no check-then-write race. Defense in depth behind the workflow's
+        own already-applied check.
+        """
+        stmt = (
             update(JobRecord)
             .where(JobRecord.id == job_id)
             .values(status=status.value, status_updated_at=func.now())
+            .returning(JobRecord.id)
         )
+        if status != JobStatus.APPLIED:
+            stmt = stmt.where(~_applied_live_exists(JobRecord.id))
+        written = await self.session.scalar(stmt) is not None
         await self.session.commit()
 
-        logger.info("job_status_updated", job_id=job_id, status=status.value)
+        if written:
+            logger.info("job_status_updated", job_id=job_id, status=status.value)
+        else:
+            # Loud on purpose: a refused write means some caller has a bug.
+            logger.warning("job_status_update_refused", job_id=job_id, status=status.value)
+        return written
+
+    async def is_applied_live(self, job_id: int) -> bool:
+        """True if this job was really applied (not a dry run). Reads applications."""
+        return await self.session.scalar(select(_applied_live_exists(job_id)))
 
     async def get_status(self, job_id: int) -> str | None:
         return await self.session.scalar(
