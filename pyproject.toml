@@ -21,6 +21,9 @@ dependencies = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "integration: uses the local Postgres inside a rolled-back transaction (skipped if down)",
+]
 
 [dependency-groups]
 dev = [

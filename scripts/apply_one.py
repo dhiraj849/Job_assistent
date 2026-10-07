@@ -1,8 +1,10 @@
 """Apply LIVE to one job, by hand, with a y/N confirmation. For first runs.
 
 Runs the same ApplyService as the workflow (lock, idempotency, daily cap,
-answers.yaml), but always in live mode and without Temporal. Only jobs I
-already approved can be applied to. A headed browser opens; artifacts go to
+answers.yaml), but always in live mode and without Temporal. Only jobs
+with a recorded approval (an applications row, written by the workflow's
+decide signal) can be applied to; pending, failed and needs_manual can be
+(re)tried. A headed browser opens; artifacts go to
 artifacts/apply/<job_id>/.
 
 First live run, capped at one apply today:
@@ -19,12 +21,8 @@ from app.config import settings
 from app.db.database import SessionLocal, engine
 from app.db.job_repository import JobRepository
 from app.logging_config import setup_logging
-from app.models.job_status import JobStatus
+from app.models.application import ApplicationOutcome
 from app.services.apply_service import CAP_TIMEZONE, ApplyService, start_of_day
-
-# Statuses a job can only reach after my approval. FAILED / NEEDS_MANUAL are
-# allowed so a job can be retried after a fix (e.g. a fresh login).
-APPLYABLE = {JobStatus.APPROVED, JobStatus.FAILED, JobStatus.NEEDS_MANUAL}
 
 
 async def main(job_id: int) -> int:
@@ -36,8 +34,9 @@ async def main(job_id: int) -> int:
             repo = JobRepository(session)
             job = await repo.get_job(job_id)
             status = await repo.get_status(job_id)
-            used = await repo.count_status_since(
-                JobStatus.APPLIED, start_of_day(datetime.now(CAP_TIMEZONE))
+            application = await repo.get_application(job_id)
+            used = await repo.count_applied_since(
+                dry_run=False, since=start_of_day(datetime.now(CAP_TIMEZONE))
             )
 
         if job is None:
@@ -49,11 +48,15 @@ async def main(job_id: int) -> int:
         print(f"Status:  {status}")
         print(f"Applied today: {used}/{settings.MAX_APPLIES_PER_DAY}")
 
-        if status not in APPLYABLE:
-            print(f"Refusing: status must be one of {sorted(APPLYABLE)} (approve it first).")
+        if application is None:
+            print("Refusing: no approval recorded. Approve it first: make approve / scripts.decide_job.")
             return 1
-        if status == JobStatus.FAILED:
-            print("Note: a previous attempt FAILED. Check artifacts/apply/ first.")
+        print(f"Application: {application.outcome.value} (approved {application.approved_at:%Y-%m-%d %H:%M})")
+        if application.applied_live:
+            print("Refusing: already applied.")
+            return 1
+        if application.outcome == ApplicationOutcome.FAILED:
+            print(f"Note: a previous attempt FAILED ({application.reason}). Check artifacts/apply/ first.")
 
         answer = input("Apply LIVE to this job on Naukri? [y/N] ").strip().lower()
         if answer != "y":

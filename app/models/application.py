@@ -1,0 +1,31 @@
+from datetime import datetime
+from enum import StrEnum
+
+from pydantic import BaseModel
+
+
+class ApplicationOutcome(StrEnum):
+    """State of one row in the applications table (CHECK-constrained in the DB)."""
+
+    # Approved by me, not applied yet (or waiting for the daily cap).
+    PENDING = "pending"
+    APPLIED = "applied"
+    NEEDS_MANUAL = "needs_manual"
+    FAILED = "failed"
+
+
+class Application(BaseModel):
+    """One applications row, as services see it."""
+
+    outcome: ApplicationOutcome
+    reason: str = ""
+    dry_run: bool = False
+    approved_at: datetime
+    approval_note: str = ""
+    applied_at: datetime | None = None
+    artifacts_dir: str | None = None
+
+    @property
+    def applied_live(self) -> bool:
+        # A dry-run "applied" must never block the real apply later.
+        return self.outcome == ApplicationOutcome.APPLIED and not self.dry_run

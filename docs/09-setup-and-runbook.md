@@ -107,12 +107,15 @@ Notes:
 | Temporal worker (runs both workflows + activities) | `uv run python -m app.workflows.worker` |
 | Start discovery workflow (needs worker; starts one `job-{id}` workflow per new job) | `uv run python -m scripts.start_discovery --keyword "Python" --location "Noida"` |
 | Start the application workflow for one existing job | `uv run python -m scripts.start_job_workflow <job_id>` |
-| List jobs awaiting your approval | `uv run python -m scripts.list_pending` |
+| List jobs awaiting your approval, then `needs_manual` / `failed` jobs with their reason | `uv run python -m scripts.list_pending` |
 | Approve / reject a job (apply follows `APPLY_MODE`, default dry-run) | `uv run python -m scripts.decide_job <job_id> yes\|no ["note"]` |
 | Log in to Naukri once and save the encrypted session (headed) | `uv run python -m scripts.naukri_login` |
 | Inspect a job's apply button, logged in (saves to `artifacts/inspect/<id>/`) | `uv run python -m scripts.inspect_apply_flow <job_id>` |
 | Same, and click Apply once then stop (never submits) | `uv run python -m scripts.inspect_apply_flow <job_id> --click` |
-| Unit tests | `uv run pytest` |
+| Apply LIVE to one approved job (needs an `applications` row from `decide_job yes`; y/N) | `uv run python -m scripts.apply_one <job_id>` |
+| Record an apply you did by hand (applications + `jobs.status`, y/N; never raw SQL) | `uv run python -m scripts.mark_applied <job_id> --reason "company site"` |
+| One-time: create `applications` rows for jobs applied before the table existed (idempotent, y/N) | `uv run python -m scripts.backfill_applications` |
+| Tests (integration tests use local Postgres in a rolled-back transaction; skipped if it is down) | `uv run pytest` (only unit: `uv run pytest -m "not integration"`) |
 | New migration | `uv run alembic revision --autogenerate -m "message"` |
 | Stop infra (keep data) | `docker compose down` |
 | Stop infra and **delete data** | `docker compose down -v` |
@@ -169,6 +172,8 @@ runs headed with a 20 s timeout.
 | `connection refused` on port 5433 | Compose not running | `docker compose up -d`; check `docker compose ps` |
 | `password authentication failed` | `.env` changed after the volume was created | Use the original password, or `docker compose down -v` (deletes data) |
 | `relation "jobs" does not exist` | Migrations not applied | `uv run alembic upgrade head` |
+| `relation "applications" does not exist` / `NotApprovedError` for an old approved job | Migration `f734e9e72583` not applied, or the job was approved before the table existed | `uv run alembic upgrade head`; approve again via the workflow, or `mark_applied` if you applied by hand |
+| New activity `record_approval` not found / old apply behaviour after an update | Worker still runs the old code | Restart the worker (`make stop` + `make start`, or restart `app.workflows.worker`) |
 | `Executable doesn't exist ... chromium` | Browser not installed | `uv run playwright install chromium` |
 | Browser fails to launch on Linux (missing libs) | System dependencies | `uv run playwright install-deps chromium` |
 | Headed browser fails over SSH / no display | No X server | `BROWSER_HEADLESS=true`, or use `xvfb-run` |

@@ -1,0 +1,186 @@
+"""applications rules on the REAL local Postgres (needs `alembic upgrade head`).
+
+Every test runs inside one outer transaction that is always rolled back:
+the repository's commit() only releases a SAVEPOINT, so nothing is kept.
+Skipped when Postgres is not running.
+"""
+
+import asyncio
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+from app.db.database import database_url
+from app.db.job_repository import ApplicationNotWritableError, JobRepository
+from app.db.models import JobRecord
+from app.models.application import ApplicationOutcome
+from app.models.job_status import JobStatus
+
+pytestmark = pytest.mark.integration
+
+APPROVED_AT = datetime.now(timezone.utc) - timedelta(hours=1)
+
+
+def run_in_rollback(test):
+    """Run `await test(repo, session)` in a transaction that is rolled back."""
+
+    async def main():
+        engine = create_async_engine(database_url)
+        try:
+            async with engine.connect() as connection:
+                outer = await connection.begin()
+                session = AsyncSession(
+                    bind=connection,
+                    join_transaction_mode="create_savepoint",
+                    expire_on_commit=False,
+                )
+                try:
+                    await test(JobRepository(session), session)
+                finally:
+                    await session.close()
+                    await outer.rollback()
+        finally:
+            await engine.dispose()
+
+    try:
+        asyncio.run(main())
+    except OSError as error:  # connection refused: stack not running
+        pytest.skip(f"Postgres not reachable: {error}")
+
+
+async def new_job(session: AsyncSession, status: JobStatus = JobStatus.AWAITING_APPROVAL) -> int:
+    job = JobRecord(
+        source="test", url=f"https://test/{uuid.uuid4()}", title="T", company="C",
+        skills=[], status=status.value,
+    )
+    session.add(job)
+    await session.flush()
+    return job.id
+
+
+async def job_status(session: AsyncSession, job_id: int) -> str:
+    return await session.scalar(select(JobRecord.status).where(JobRecord.id == job_id))
+
+
+def test_approval_then_apply_writes_both_tables():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+
+        assert await repo.record_approval(job_id, APPROVED_AT, "looks good")
+        application = await repo.get_application(job_id)
+        assert application.outcome == ApplicationOutcome.PENDING
+        assert application.approval_note == "looks good"
+        assert await job_status(session, job_id) == "approved"
+
+        await repo.save_apply_result(
+            job_id, ApplicationOutcome.APPLIED, JobStatus.APPLIED, "", False, "artifacts/apply/x"
+        )
+        application = await repo.get_application(job_id)
+        assert application.applied_live
+        assert application.applied_at > APPROVED_AT
+        assert await job_status(session, job_id) == "applied"
+        assert await repo.count_applied_since(False, APPROVED_AT) >= 1
+
+    run_in_rollback(test)
+
+
+def test_live_applied_row_is_never_overwritten():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_approval(job_id, APPROVED_AT, "")
+        await repo.save_apply_result(job_id, ApplicationOutcome.APPLIED, JobStatus.APPLIED, "", False, None)
+
+        # A second apply result is refused...
+        with pytest.raises(ApplicationNotWritableError):
+            await repo.save_apply_result(
+                job_id, ApplicationOutcome.FAILED, JobStatus.FAILED, "boom", False, None
+            )
+        # ...and so is a re-approval (the workflow-restart case from the bug).
+        assert not await repo.record_approval(job_id, APPROVED_AT, "again")
+        assert not await repo.record_manual_apply(job_id, "by hand")
+
+        assert (await repo.get_application(job_id)).applied_live
+        assert await job_status(session, job_id) == "applied"
+
+    run_in_rollback(test)
+
+
+def test_unique_job_id_allows_one_application_per_job():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        row = dict(outcome="pending", approved_at=APPROVED_AT)
+        assert await repo.insert_application_if_missing(job_id, **row)
+        assert not await repo.insert_application_if_missing(job_id, **row)
+
+        # Without ON CONFLICT, the UNIQUE constraint itself refuses it.
+        with pytest.raises(IntegrityError, match="applications_job_id_key"):
+            await session.execute(
+                text("INSERT INTO applications (job_id, outcome, approved_at) VALUES (:j, 'pending', now())"),
+                {"j": job_id},
+            )
+        await session.rollback()
+
+    run_in_rollback(test)
+
+
+def test_status_and_application_change_together_or_not_at_all(monkeypatch):
+    """Fail AFTER the applications write: the rollback must undo it too."""
+
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_approval(job_id, APPROVED_AT, "")
+
+        async def broken_status_write(job_id, status):
+            raise RuntimeError("jobs update failed")
+
+        monkeypatch.setattr(repo, "_set_job_status", broken_status_write)
+        with pytest.raises(RuntimeError):
+            await repo.save_apply_result(
+                job_id, ApplicationOutcome.APPLIED, JobStatus.APPLIED, "", False, None
+            )
+        await session.rollback()  # what closing the activity's session does
+
+        assert (await repo.get_application(job_id)).outcome == ApplicationOutcome.PENDING
+        assert await job_status(session, job_id) == "approved"
+
+    run_in_rollback(test)
+
+
+@pytest.mark.parametrize(
+    ("row", "constraint"),
+    [
+        (dict(outcome="applied"), "ck_applications_applied_at"),  # applied without applied_at
+        (dict(outcome="pending", applied_at=APPROVED_AT), "ck_applications_applied_at"),
+        (dict(outcome="needs_manual", reason=""), "ck_applications_reason"),
+        (dict(outcome="typo"), "ck_applications_outcome"),
+        (
+            dict(outcome="applied", applied_at=APPROVED_AT - timedelta(minutes=1)),
+            "ck_applications_applied_after_approval",
+        ),
+    ],
+)
+def test_check_constraints_reject_impossible_rows(row, constraint):
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        with pytest.raises(IntegrityError, match=constraint):
+            await repo.insert_application_if_missing(job_id, approved_at=APPROVED_AT, **row)
+        await session.rollback()
+
+    run_in_rollback(test)
+
+
+def test_manual_apply_records_row_and_status():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+
+        assert await repo.record_manual_apply(job_id, "company site")
+        application = await repo.get_application(job_id)
+        assert application.applied_live
+        assert application.reason == "company site"
+        assert await job_status(session, job_id) == "applied"
+
+    run_in_rollback(test)

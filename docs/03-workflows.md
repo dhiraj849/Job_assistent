@@ -105,6 +105,7 @@ yet verified ([06](06-browser-automation.md#live-apply-built-chatbot-selectors-n
 | `match_job(job)` | `JobMatchService` + `JobScoreService` + `JobMatchLevelService` | 2 min | `JobMatchItem` |
 | `save_match(job_id, item)` | `JobRepository.save_match` (upsert) | 30 s | — |
 | `update_job_status(job_id, status)` | `JobRepository.update_status` | 30 s | — |
+| `record_approval(job_id, approved_at, note)` | `JobRepository.record_approval`: `applications` row `pending` + `jobs.status=approved`, one commit; leaves a job applied live untouched | 30 s | — |
 | `apply_job(job_id)` | `ApplyService` (`app/services/apply_service.py`) | 5 min | `ApplyResult` |
 | `apply_job_dry_run(job_id)` | `JobRepository.get_job`, logs `apply_dry_run` | 30 s | message — **old histories only** (pre-patch), still registered on the worker |
 
@@ -117,15 +118,22 @@ All except `apply_job` use the shared retry policy (max 3 attempts). `apply_job`
 - **Query** `current_status() -> str`.
 - **Approval timeout: 3 days** (`workflow.wait_condition`). On timeout → `expired`. Silence never means yes.
 - Only `strong` and `potential` matches wait for approval; `weak` ends as `filtered_out`.
-- Every status change goes through the `update_job_status` activity; the workflow keeps only an
-  in-memory copy for the query.
+- Every status change goes through an activity (`update_job_status`, `record_approval`, `apply_job`);
+  the workflow keeps only an in-memory copy for the query.
+- **Approval is recorded** by `record_approval` with the note and the decision time. The time is
+  `workflow.now()` taken in the signal handler: deterministic on replay, and the real decision time
+  even if the activity runs later. Rejections are not recorded in `applications`.
 - If an activity gives up after its retries, the workflow sets `failed` and then fails (visible in the UI).
-- **Scripts:** `scripts/list_pending.py` (jobs in `awaiting_approval` with LLM score + level),
+- **Scripts:** `scripts/list_pending.py` (jobs in `awaiting_approval` with LLM score + level, then
+  `needs_manual` / `failed` jobs with their reason), `scripts/mark_applied.py <job_id> --reason`
+  (records an apply done by hand),
   `scripts/decide_job.py <job_id> yes|no [note]` (checks status via the query, then signals),
   `scripts/start_job_workflow.py <job_id>` (for jobs saved before workflows existed).
 - **Tests:** `tests/workflows/test_job_application_workflow.py` — approved, rejected,
   3-day timeout → expired, weak → filtered_out, needs_manual, cap wait + retry, cap → expired after
-  3 days, and replay of both the pre-patch and patched histories (time-skipping server, fake activities).
+  3 days, `record_approval` gets the note and decision time (and is not called on reject), and replay
+  of the pre-`apply-job-v1`, pre-`record-approval-v1` and current histories (time-skipping server, fake
+  activities).
 
 ```mermaid
 stateDiagram-v2
@@ -136,7 +144,7 @@ stateDiagram-v2
     shortlisted --> matched: match_job + save_match
     matched --> filtered_out: level weak
     matched --> awaiting_approval: level strong / potential
-    awaiting_approval --> approved: decide(yes)
+    awaiting_approval --> approved: decide(yes) + record_approval
     awaiting_approval --> rejected: decide(no)
     awaiting_approval --> expired: no decision in 3 days
     approved --> applied_dry_run: apply_job (dry_run)
@@ -160,14 +168,18 @@ stateDiagram-v2
 `ApplyService.apply(job_id)` (called by the `apply_job` activity) runs these checks in order:
 
 1. **Lock** — `JobRepository.lock_applies()` takes a Postgres advisory transaction lock
-   (`pg_advisory_xact_lock`). It is held until the final status is committed, so two parallel
+   (`pg_advisory_xact_lock`). It is held until the final result is committed, so two parallel
    activities cannot both pass the cap check ("check-then-act" race).
-2. **Idempotency** — status already `applied` → `already_applied`, nothing else runs.
-3. **Daily cap** — counts jobs whose status became `applied` (live) or `applied_dry_run` (dry run)
-   since the start of the **IST day**. At `MAX_APPLIES_PER_DAY` → `skipped_cap` with
-   `retry_after_seconds` until IST midnight. Dry runs never use up the live quota.
-4. **Answers** — `answers.yaml` is loaded and validated in both modes; missing / invalid → `failed`.
-5. **Apply** — `APPLY_MODE=dry_run`: logs only; the browser applier is never even built.
+2. **Approval** — no `applications` row → `NotApprovedError` (the activity fails; nothing is opened).
+3. **Idempotency** — from `applications`, not `jobs.status`: row applied live → `already_applied`,
+   and `jobs.status` is synced back to `applied`. `jobs.status` alone could not be trusted: the
+   workflow writes `approved` before every apply, so a re-run workflow (or a manual apply while it
+   waited) used to wipe `applied` and the job was applied again.
+4. **Daily cap** — counts `applications` rows applied (live, or dry run in dry-run mode) since the
+   start of the **IST day**. At `MAX_APPLIES_PER_DAY` → `skipped_cap` with `retry_after_seconds`
+   until IST midnight; the row stays `pending`. Dry runs never use up the live quota.
+5. **Answers** — `answers.yaml` is loaded and validated in both modes; missing / invalid → `failed`.
+6. **Apply** — `APPLY_MODE=dry_run`: logs only; the browser applier is never even built.
    `live`: `NaukriJobApplier.apply(job_id, job, answers)` (`app/browser/job_applier.py`) →
    `ApplierResult` `applied` / `needs_manual` / `already_applied` with a `reason` (e.g. the unknown
    question) copied into `ApplyResult.reason`; any exception (incl. expired session, apply not
@@ -177,8 +189,11 @@ stateDiagram-v2
 `ApplyResult` (`app/models/apply_result.py`): `outcome` (`applied`, `needs_manual`, `failed`,
 `skipped_cap`, `already_applied`), `dry_run`, `reason`, `retry_after_seconds`.
 
-The activity writes the final `jobs.status` itself, inside the locked transaction; the workflow only
-mirrors it for the query. Settings are read only inside the activity, never in the workflow, so a
+The activity writes the result itself with `JobRepository.save_apply_result`: `applications`
+(`outcome`, `reason`, `dry_run`, `applied_at`, `artifacts_dir` = `artifacts/apply/<job_id>`) **and**
+`jobs.status` in one commit inside the lock, so both change or neither does. The update refuses a row
+already applied live (`ApplicationNotWritableError`), a DB-level backstop to step 3. The workflow only
+mirrors the status for the query. Settings are read only inside the activity, never in the workflow, so a
 changed env var cannot change what a replayed workflow does.
 
 On `skipped_cap` the workflow `workflow.sleep()`s for `retry_after_seconds` (a durable timer) and
@@ -199,6 +214,9 @@ The switch from `apply_job_dry_run` to `apply_job` is guarded by `workflow.patch
   `apply_job_dry_run`.
 - Test: `tests/workflows/histories/apply_dry_run_v0.json` is a history recorded with the pre-patch
   code; a `Replayer` test replays it with the current code.
+- `workflow.patched("record-approval-v1")` guards the switch from `update_job_status(APPROVED)` to
+  `record_approval` the same way; `tests/workflows/histories/apply_job_v1.json` (recorded with the
+  code before it) is replayed in a test.
 - Removal (later): once no pre-patch workflow is open, replace `patched()` with
   `workflow.deprecate_patch("apply-job-v1")` and delete the old branch; after those workflows are
   gone too, remove the call and stop registering `apply_job_dry_run`.
@@ -306,13 +324,14 @@ stateDiagram-v2
 | `filtered_out` | Failed keyword filter, semantic threshold, or `weak` LLM level | `jobs.status` | Yes (workflow path; `main.py` still re-processes) |
 | `shortlisted` | Selected for LLM evaluation | `jobs.status` | Yes (workflow path) |
 | `matched` | LLM result + score saved | `jobs.status` + `job_matches` row | Yes (workflow path; migration backfilled old matches) |
-| `awaiting_approval` | Application workflow waiting for signal | `jobs.status` today (`applications.status` planned) | Yes |
-| `approved` / `rejected` / `expired` | Human decision, or 3-day timeout | `jobs.status` today (`applications.status` planned) | Yes (note is not persisted yet) |
-| `applied_dry_run` | Dry-run apply logged | `jobs.status` | Yes |
-| `applied` | Applied for real (or Naukri already showed "Applied") | `jobs.status` | Yes |
-| `needs_manual` | Approved, but a human must finish it (company site, unknown question) | `jobs.status` | Yes |
-| `failed` | Activity retries exhausted, bad `answers.yaml`, browser error, expired session, apply not confirmed | `jobs.status` | Yes |
-| `applying` | Submission in progress | `applications.status` | No |
+| `awaiting_approval` | Application workflow waiting for signal | `jobs.status` | Yes |
+| `approved` | Human said yes | `jobs.status` + `applications` row `pending` (time + note) | Yes |
+| `rejected` / `expired` | Human said no, or 3-day timeout | `jobs.status` | Yes (rejection note not persisted) |
+| `applied_dry_run` | Dry-run apply logged | `jobs.status` + `applications` `applied`, `dry_run=true` | Yes |
+| `applied` | Applied for real (or Naukri already showed "Applied", or `mark_applied`) | `jobs.status` + `applications` `applied` | Yes |
+| `needs_manual` | Approved, but a human must finish it (company site, unknown question) | `jobs.status` + `applications` (reason) | Yes |
+| `failed` | Activity retries exhausted, bad `answers.yaml`, browser error, expired session, apply not confirmed | `jobs.status` (+ `applications` with reason if it failed in `apply_job`) | Yes |
+| `applying` | Submission in progress | `applications.outcome` | No |
 
 Rules:
 

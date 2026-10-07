@@ -1,10 +1,11 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.models.application import ApplicationOutcome
 from app.models.job_status import JobStatus
 
 
@@ -59,5 +60,53 @@ class JobMatchRecord(Base):
     recommendation: Mapped[str] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+_OUTCOMES = ", ".join(f"'{outcome.value}'" for outcome in ApplicationOutcome)
+
+
+class ApplicationRecord(Base):
+    """One approved job and what happened when we applied (audit + idempotency).
+
+    A row exists only after my approval, so approved_at is NOT NULL.
+    """
+
+    __tablename__ = "applications"
+    # The rules live in the DB too, so a buggy script or a raw SQL fix
+    # cannot write an impossible row.
+    __table_args__ = (
+        CheckConstraint(f"outcome IN ({_OUTCOMES})", name="ck_applications_outcome"),
+        CheckConstraint(
+            "(outcome = 'applied') = (applied_at IS NOT NULL)",
+            name="ck_applications_applied_at",
+        ),
+        # A human must be able to see what to do next.
+        CheckConstraint(
+            "outcome NOT IN ('needs_manual', 'failed') OR reason <> ''",
+            name="ck_applications_reason",
+        ),
+        CheckConstraint("applied_at >= approved_at", name="ck_applications_applied_after_approval"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    # UNIQUE: one application per job, like the workflow id job-{id}.
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), unique=True)
+
+    outcome: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str] = mapped_column(Text, server_default="")
+    dry_run: Mapped[bool] = mapped_column(Boolean, server_default="false")
+
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    approval_note: Mapped[str] = mapped_column(Text, server_default="")
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    artifacts_dir: Mapped[str | None] = mapped_column(String(500))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

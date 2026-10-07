@@ -5,7 +5,9 @@ server jumps over the 3-day approval timeout (and daily-cap waits) instantly.
 """
 
 import asyncio
+import json
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from temporalio import activity
@@ -85,13 +87,18 @@ def make_activities(
     async def update_job_status(job_id: int, status: JobStatus) -> None:
         statuses.append(status.value)
 
+    # record_approval also sets jobs.status=approved, so it is logged as a status.
+    @activity.defn(name="record_approval")
+    async def record_approval(job_id: int, approved_at: datetime, note: str) -> None:
+        statuses.append(JobStatus.APPROVED.value)
+
     @activity.defn(name="apply_job")
     async def apply_job(job_id: int) -> ApplyResult:
         applied.append(job_id)
         return apply_results[min(len(applied), len(apply_results)) - 1]
 
     return [load_job, filter_job, semantic_score, match_job, save_match,
-            update_job_status, apply_job]
+            update_job_status, record_approval, apply_job]
 
 
 async def wait_for_status(handle: WorkflowHandle, expected: str) -> None:
@@ -202,10 +209,12 @@ def test_pre_patch_history_replays_on_old_path():
 def test_patched_history_replays_on_new_path():
     _, _, _, history = asyncio.run(run_workflow("strong", decision=True))
 
-    # The new path leaves a patch marker and never schedules the old activity.
+    # The new path leaves patch markers (approval + apply) and never
+    # schedules the old activities.
     markers = [e for e in history.events if e.HasField("marker_recorded_event_attributes")]
-    assert [m.marker_recorded_event_attributes.marker_name for m in markers] == ["core_patch"]
+    assert [m.marker_recorded_event_attributes.marker_name for m in markers] == ["core_patch"] * 2
     assert "apply_job_dry_run" not in history.to_json()
+    assert '"approved"' not in history.to_json()  # no update_job_status(APPROVED)
 
     asyncio.run(replayer().replay_workflow(history))
 
@@ -232,3 +241,45 @@ def test_weak_match_is_filtered_out_without_approval():
     assert result == "filtered_out"
     assert statuses == ["shortlisted", "matched", "filtered_out"]
     assert applied == []
+
+
+# apply_job_v1.json was recorded with the code from BEFORE "record-approval-v1":
+# it wrote update_job_status(APPROVED) and then ran apply_job. A workflow in
+# that state (e.g. sleeping on the daily cap) must still replay.
+
+
+def test_pre_approval_patch_history_replays_on_old_path():
+    history = WorkflowHistory.from_json(
+        "job-apply-v1", (HISTORIES / "apply_job_v1.json").read_text()
+    )
+    asyncio.run(replayer().replay_workflow(history))
+
+
+def _scheduled_inputs(history: WorkflowHistory, activity_name: str) -> list[list]:
+    """Decoded arguments of every scheduled activity with this name."""
+    inputs = []
+    for event in history.events:
+        if not event.HasField("activity_task_scheduled_event_attributes"):
+            continue
+        attributes = event.activity_task_scheduled_event_attributes
+        if attributes.activity_type.name == activity_name:
+            inputs.append([json.loads(p.data) for p in attributes.input.payloads])
+    return inputs
+
+
+def test_approval_is_recorded_with_note_and_decision_time():
+    _, _, _, history = asyncio.run(run_workflow("strong", decision=True))
+
+    [(job_id, approved_at, note)] = _scheduled_inputs(history, "record_approval")
+    assert job_id == JOB_ID
+    assert note == "test"
+    # The time comes from workflow.now() at the signal, not from the activity.
+    signal = next(e for e in history.events if e.HasField("workflow_execution_signaled_event_attributes"))
+    decided = datetime.fromisoformat(approved_at)
+    assert decided >= signal.event_time.ToDatetime().replace(tzinfo=decided.tzinfo)
+
+
+def test_rejection_records_no_approval():
+    _, _, _, history = asyncio.run(run_workflow("potential", decision=False))
+
+    assert _scheduled_inputs(history, "record_approval") == []

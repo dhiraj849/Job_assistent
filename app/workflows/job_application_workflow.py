@@ -1,5 +1,5 @@
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from temporalio import workflow
 from temporalio.exceptions import ActivityError
@@ -17,6 +17,7 @@ with workflow.unsafe.imports_passed_through():
         filter_job,
         load_job,
         match_job,
+        record_approval,
         save_match,
         semantic_score,
         update_job_status,
@@ -29,6 +30,8 @@ APPLY_TIMEOUT = timedelta(minutes=5)
 
 # Version marker for the apply_job_dry_run -> apply_job change (see _run).
 APPLY_PATCH = "apply-job-v1"
+# Version marker for update_job_status(APPROVED) -> record_approval.
+APPROVAL_PATCH = "record-approval-v1"
 
 # If the daily cap is full, try again on this many following days, then give up:
 # an approval older than that is probably stale.
@@ -49,6 +52,7 @@ class JobApplicationWorkflow:
         self._status = JobStatus.DISCOVERED
         self._approved: bool | None = None
         self._note = ""
+        self._decided_at: datetime | None = None
 
     @workflow.run
     async def run(self, job_id: int) -> str:
@@ -114,8 +118,19 @@ class JobApplicationWorkflow:
         if not self._approved:
             return await self._set_status(job_id, JobStatus.REJECTED)
 
-        # 5. Apply
-        await self._set_status(job_id, JobStatus.APPROVED)
+        # 5. Record the approval (applications row + jobs.status), then apply.
+        # Same patching idea as APPLY_PATCH below: old histories that already
+        # ran update_job_status(APPROVED) replay the old path.
+        if workflow.patched(APPROVAL_PATCH):
+            await workflow.execute_activity(
+                record_approval,
+                args=[job_id, self._decided_at, self._note],
+                start_to_close_timeout=DB_TIMEOUT,
+                retry_policy=RETRY_POLICY,
+            )
+            self._status = JobStatus.APPROVED
+        else:
+            await self._set_status(job_id, JobStatus.APPROVED)
 
         # patched() is True for new code paths and records a marker in history.
         # On replay of a history WITHOUT the marker (it already ran the old
@@ -178,6 +193,9 @@ class JobApplicationWorkflow:
             return
         self._approved = approved
         self._note = note
+        # workflow.now() is deterministic (replay gives the same value) and is
+        # when I decided, even if the activity that stores it runs later.
+        self._decided_at = workflow.now()
 
     @workflow.query
     def current_status(self) -> str:

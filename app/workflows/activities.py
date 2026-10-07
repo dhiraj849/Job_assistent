@@ -6,6 +6,7 @@ the worker and clients use the Pydantic data converter (app/workflows/client.py)
 """
 
 import asyncio
+from datetime import datetime
 from functools import cache
 
 import structlog
@@ -153,6 +154,17 @@ async def save_match(job_id: int, item: JobMatchItem) -> None:
 async def update_job_status(job_id: int, status: JobStatus) -> None:
     async with SessionLocal() as session:
         await JobRepository(session).update_status(job_id, status)
+
+
+@activity.defn
+async def record_approval(job_id: int, approved_at: datetime, note: str) -> None:
+    """Store my approval: applications row (pending) + jobs.status=approved, one commit.
+
+    Idempotent: a retry just rewrites the same values. A job already applied
+    live is left alone; apply_job then returns ALREADY_APPLIED.
+    """
+    async with SessionLocal() as session:
+        await JobRepository(session).record_approval(job_id, approved_at, note)
 
 
 @activity.defn

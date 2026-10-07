@@ -7,11 +7,12 @@ holds derived vectors keyed by `jobs.id` and can be rebuilt from Postgres
 ## Current tables (Built)
 
 Defined in `app/db/models.py`, created by migrations `e38fb9a63e38` (jobs), `6fc31f68061a` (job_matches) and
-`b5d33dd745b3` (`jobs.status`, `jobs.status_updated_at`).
+`b5d33dd745b3` (`jobs.status`, `jobs.status_updated_at`) and `f734e9e72583` (applications).
 
 ```mermaid
 erDiagram
     jobs ||--o| job_matches : "has at most one"
+    jobs ||--o| applications : "has at most one"
     jobs {
         int id PK
         varchar_50 source "e.g. naukri"
@@ -42,6 +43,19 @@ erDiagram
         text recommendation
         timestamptz created_at "default now()"
     }
+    applications {
+        int id PK
+        int job_id FK, UK "jobs.id, unique: one application per job"
+        varchar_20 outcome "pending | applied | needs_manual | failed (CHECK)"
+        text reason "default '', required for needs_manual / failed"
+        boolean dry_run "default false"
+        timestamptz approved_at "NOT NULL: a row exists only after approval"
+        text approval_note "default '', from the decide signal"
+        timestamptz applied_at "set iff outcome = applied"
+        varchar_500 artifacts_dir "nullable, e.g. artifacts/apply/25"
+        timestamptz created_at "default now()"
+        timestamptz updated_at "default now(), set on every write"
+    }
 ```
 
 Notes on current behaviour:
@@ -58,17 +72,35 @@ Notes on current behaviour:
   without a migration). Only the Temporal workflows and their activities change it, through
   `JobRepository.update_status` (which also sets `status_updated_at`). The migration backfilled
   `matched` for jobs that already had a `job_matches` row.
-- The daily apply cap is derived from `jobs.status` + `status_updated_at`
-  (`JobRepository.count_status_since`, served by `ix_jobs_status`), and applies are serialized with a
-  Postgres advisory transaction lock (`JobRepository.lock_applies`, key `APPLY_LOCK_KEY`). No
-  `applications` table yet ([03](03-workflows.md#apply-safety-rails-built)).
+- `applications` (`ApplicationRecord`, values in `ApplicationOutcome`, `app/models/application.py`) is
+  the source of truth for applying; `jobs.status` only mirrors it. The workflow rewrites `jobs.status`
+  (e.g. `approved`) before every apply, so `jobs.status` cannot prove a job was never applied.
+  - Written only through `JobRepository`: `record_approval` (row `pending` + `jobs.status=approved`),
+    `save_apply_result` (final outcome + `jobs.status`), `record_manual_apply`
+    (`scripts/mark_applied.py`) and `insert_application_if_missing` (`scripts/backfill_applications.py`).
+    Each writes `applications` and `jobs` in **one commit**: both change or neither does.
+  - Every write has the guard `NOT (outcome = 'applied' AND NOT dry_run)`: a row applied live is never
+    overwritten (re-approval, a second apply result or a manual mark returns False /
+    raises `ApplicationNotWritableError`). A dry-run `applied` row does not block the real apply.
+  - `applied_at` / `updated_at` use `clock_timestamp()`, not `now()`: `now()` is the transaction start,
+    and an apply holds its transaction (and lock) open for the whole browser run.
+  - Jobs 23 and 25 (applied before the table existed) were backfilled by
+    `scripts/backfill_applications.py`, with times taken from artifacts and Temporal history. A script,
+    not a migration, because those facts only exist in the local database.
+- The daily apply cap counts `applications` rows with `outcome='applied'`, the same `dry_run` and
+  `applied_at` since IST midnight (`JobRepository.count_applied_since`). Applies are serialized with a
+  Postgres advisory transaction lock (`JobRepository.lock_applies`, key `APPLY_LOCK_KEY`)
+  ([03](03-workflows.md#apply-safety-rails-built)).
 - `JobRepository.save_match` is an upsert (`ON CONFLICT (job_id) DO UPDATE`): a retried activity or a
   re-run workflow overwrites the match, and the latest evaluation wins.
 - `JobRepository.get_pending_approvals()` joins `jobs` (status `awaiting_approval`) with `job_matches`
-  for `scripts/list_pending.py`.
+  for `scripts/list_pending.py`; `get_jobs_needing_attention()` outer-joins `jobs` (status
+  `needs_manual` / `failed`) with `applications` for the reason (none if the workflow failed before
+  approval).
 - `job_matches.job_id` is `UNIQUE` → one evaluation per job, globally. Correct for one user; wrong
   once there are multiple users or profile versions.
-- No `ON DELETE` behaviour on the FK; deleting a job with a match fails.
+- No `ON DELETE` behaviour on the FKs; deleting a job with a match or an application fails (wanted for
+  the audit trail).
 - The ORM declares `default=list` for JSONB columns (Python-side); the DB has no server default.
 
 ### Indexes (current)
@@ -80,6 +112,17 @@ Notes on current behaviour:
 | `jobs` | `ix_jobs_status` on `status` | migration `b5d33dd745b3` |
 | `job_matches` | PK `id` | migration |
 | `job_matches` | UNIQUE `job_id` (also serves the join in `get_unmatched_jobs_with_ids`) | migration |
+| `applications` | PK `id`, UNIQUE `job_id` (`applications_job_id_key`) | migration `f734e9e72583` |
+
+### Constraints on `applications` (current)
+
+| Constraint | Rule | Why |
+|---|---|---|
+| `ck_applications_outcome` | `outcome IN ('pending','applied','needs_manual','failed')` | No typo values in the audit table (unlike the flexible `jobs.status`); a new value needs a migration. |
+| `ck_applications_applied_at` | `(outcome = 'applied') = (applied_at IS NOT NULL)` | `applied_at` exactly when applied. |
+| `ck_applications_reason` | `outcome NOT IN ('needs_manual','failed') OR reason <> ''` | A human must see what to do next. |
+| `ck_applications_applied_after_approval` | `applied_at >= approved_at` | Never applied before approval (passes while `applied_at` is NULL). |
+| NOT NULL `approved_at` | | A row exists only after a human approval. |
 
 Missing: `jobs.last_seen_at` (filtered in the unmatched query). Fine at current volume (hundreds of rows).
 
@@ -93,7 +136,6 @@ erDiagram
     users ||--o{ pipeline_runs : runs
     candidate_profiles ||--o{ job_matches : "used by"
     jobs ||--o{ job_matches : "evaluated in"
-    jobs ||--o{ applications : "applied to"
     job_matches ||--o| applications : "leads to"
 
     users {
@@ -133,20 +175,11 @@ erDiagram
     applications {
         int id PK
         int user_id FK
-        int job_id FK
         int job_match_id FK
-        varchar status "awaiting_approval | approved | rejected | applying | applied | failed"
         varchar workflow_id "job-{job_id}"
         timestamptz approval_requested_at
-        timestamptz approved_at
         varchar decided_by
-        text decision_note
-        boolean dry_run
-        timestamptz submitted_at
         jsonb artifact_keys "MinIO screenshots / HTML"
-        text error
-        timestamptz created_at
-        timestamptz updated_at
     }
     pipeline_runs {
         int id PK
@@ -164,7 +197,7 @@ erDiagram
     }
 ```
 
-Only new / changed columns are shown for `jobs` and `job_matches`.
+Only new / changed columns are shown for `jobs`, `job_matches` and `applications`.
 
 ### Planned indexes and constraints
 
@@ -172,9 +205,8 @@ Only new / changed columns are shown for `jobs` and `job_matches`.
 |---|---|---|
 | `jobs` | `(last_seen_at)` | Recency window. |
 | `job_matches` | UNIQUE `(user_id, job_id, profile_id, prompt_version)` replaces UNIQUE `(job_id)` | Multi-user and re-evaluation after prompt/profile changes. |
-| `applications` | UNIQUE `(user_id, job_id)` | Never two applications for the same job (mirrors workflow ID). |
-| `applications` | CHECK `status NOT IN ('applying','applied') OR approved_at IS NOT NULL` | Enforce human approval at the DB level too. |
-| `applications` | `(user_id, status)` | Dashboard queues. |
+| `applications` | UNIQUE `(user_id, job_id)` replaces UNIQUE `(job_id)` | Multi-user. |
+| `applications` | `(user_id, outcome)` | Dashboard queues. |
 | `candidate_profiles` | partial UNIQUE `(user_id) WHERE is_active` | One active profile per user. |
 | `pipeline_runs` | `(user_id, started_at DESC)` | Run history. |
 

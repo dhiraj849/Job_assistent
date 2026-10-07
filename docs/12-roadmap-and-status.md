@@ -16,7 +16,8 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Storage | `jobs` table, dedupe by URL, `last_seen_at` refresh | Built | `app/db/job_repository.py:19`, migration `e38fb9a63e38` |
 | Storage | `job_matches` table | Built | migration `6fc31f68061a` |
 | Storage | Job lifecycle status | Planned | — |
-| Storage | `users`, `candidate_profiles`, `applications`, `pipeline_runs` | Planned | — |
+| Storage | `applications` table (UNIQUE job_id, outcome, reason, dry_run, approved_at, applied_at, artifacts_dir; CHECK constraints) | Built | `app/db/models.py` (`ApplicationRecord`), migration `f734e9e72583` |
+| Storage | `users`, `candidate_profiles`, `pipeline_runs`; `user_id` on `applications` | Planned | — |
 | Matching | Keyword filter (hardcoded) | Built | `app/services/job_filter_service.py` |
 | Matching | Profile-driven filter keywords / role focus | Planned | — |
 | Retrieval | fastembed bge-small embeddings | Built | `app/vector/embedder.py` |
@@ -31,7 +32,8 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Agent | Tool-calling prototype (`search_jobs`, `get_job_details`) | In progress | `app/agent/` |
 | Approval | CLI yes/no prompt (not persisted) | In progress | `app/agent/approval.py` |
 | Approval | Temporal `decide` signal + 3-day timeout (→ `expired`), status in `jobs.status` | Built | `app/workflows/job_application_workflow.py`, `scripts/list_pending.py`, `scripts/decide_job.py` |
-| Approval | Persist decision note / who / when (`applications` table), API instead of scripts | Planned | — |
+| Approval | Persist decision note + time (`record_approval` activity, `workflow.now()` at the signal, patch `record-approval-v1`) | Built | `app/workflows/job_application_workflow.py`, `app/workflows/activities.py`, `tests/workflows/histories/apply_job_v1.json` |
+| Approval | Persist who decided and rejections; API instead of scripts | Planned | — |
 | Apply | Application preparation (answers from `answers.yaml`) | Built | `app/services/answers_loader.py`, `app/models/application_answers.py`; validated by `ApplyService` before every apply |
 | Apply | Safety rails: `APPLY_MODE`, daily cap (advisory lock), idempotency, typed `ApplyResult`, no-retry apply | Built | `app/services/apply_service.py`, `app/workflows/activities.py` (`apply_job`) |
 | Apply | `workflow.patched("apply-job-v1")` versioning + replay test | Built | `app/workflows/job_application_workflow.py`, `tests/workflows/histories/` |
@@ -39,7 +41,9 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Apply | Live browser apply (`NaukriJobApplier`: session check, button classify, chatbot answers, confirmation, step artifacts) | Built (first live run OK 2026-10-07: job 25, no questions, confirmed) | `app/browser/job_applier.py`, `app/browser/apply_page.py` |
 | Apply | Deterministic question mapper (no LLM; unknown → `needs_manual`) | Built | `app/browser/apply_questions.py` |
 | Apply | Manual one-job live apply with y/N confirmation | Built | `scripts/apply_one.py` |
-| Apply | `applications` table (UNIQUE job_id, outcome, reason, applied_at) for audit + DB-level idempotency | Planned | — |
+| Apply | Idempotency + daily cap from `applications` (fixes re-apply after `jobs.status` was overwritten to `approved`); result and `jobs.status` in one commit | Built | `app/services/apply_service.py`, `app/db/job_repository.py`, `tests/integration/test_applications_db.py` |
+| Apply | Record manual applies / list jobs needing attention with reason / backfill of jobs 23 + 25 | Built | `scripts/mark_applied.py`, `scripts/list_pending.py`, `scripts/backfill_applications.py` |
+| Apply | Remove `record-approval-v1` patch once no workflow approved before it is open | Planned | — |
 | Browser | Session reuse (`storage_state`, Fernet-encrypted, manual login script) | Built | `app/browser/session_store.py`, `scripts/naukri_login.py` |
 | Apply | Apply-flow inspection tool (button type, optional single click, no submit) | Built | `scripts/inspect_apply_flow.py`, `app/browser/apply_button.py` |
 | Apply | Verify apply selectors on live pages (verified: login marker, company-site + Naukri apply buttons, apply confirmation; not yet: already-applied, chatbot) | In progress | `app/browser/naukri_selectors.py`, `tests/fixtures/naukri/` |
@@ -90,7 +94,8 @@ All verified in code unless marked otherwise.
 | 10 | Duplicate flows: `app/agent/` vs `JobMatchingPipeline` | `app/agent/steps.py` re-implements search/filter/score/level/rank, with demo data | Two sources of truth for the same logic | Keep one path; agent → tool use inside activities (2) |
 | 11 | New jobs can miss their application workflow | `save_jobs` activity commits, then returns ids; if it fails in between, the retry sees the jobs as already seen | Those jobs stay `discovered` with no workflow | Start manually with `scripts/start_job_workflow.py`; later: return ids of the batch still `discovered` (3) |
 | 12 | Every new job that passes filter + semantic threshold gets an LLM call | `JobApplicationWorkflow` has no top-N / daily budget (unlike `MAX_MATCH_JOBS` in `main.py`) | More LLM usage per discovery run | Daily LLM budget (2) |
-| 13 | Decision note is not persisted | `decide(approved, note)` keeps the note only in workflow state | No audit trail beyond Temporal history | `applications` table (3) |
+| 13 | ~~Decision note is not persisted~~ **Fixed** (approvals only; rejection notes still are not) | `record_approval` stores note + time in `applications` | — | Done (3) |
+| 14 | A re-run workflow for an applied job rewrites `jobs.status` (shortlisted → … → approved) and repeats the LLM match | `_set_status` has no guard; `applications` now blocks the second apply and `apply_job` syncs `jobs.status` back to `applied` | Wasted LLM call; `jobs.status` wrong until approval | Make `applied` terminal in `update_status`, or skip at workflow start (3) |
 | 11 | Auto-apply step not implemented | No apply code anywhere; `approval.py` only sets `next_action = "apply"` | Core feature missing | Phase 4 |
 
 ## Tech debt (additional findings)
