@@ -6,3 +6,11 @@ __pycache__/
 venv/
 *.zip
 profile.yaml
+answers.yaml
+# Encrypted Naukri session and inspection dumps (contain personal data)
+secrets/
+artifacts/
+# MkDocs build output
+site/
+# Makefile runtime files (worker PID + log)
+.run/
