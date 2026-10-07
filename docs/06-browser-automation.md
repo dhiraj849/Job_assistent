@@ -54,9 +54,26 @@ Selectors live as constants / literals; they will break when Naukri changes its 
 | Skill tags | `.tags-gt .tag-li` | same |
 | Detail-page description | **unknown** — `scripts/inspect_job_page.py` saves a detail page's HTML to `/tmp/naukri_job_page.html` to find it | — |
 
-Planned hardening: move all selectors into one `app/browser/naukri_selectors.py`, prefer
-role/text-based locators where possible, and add a smoke test against a saved HTML fixture so a
-markup change fails in CI rather than silently returning empty fields.
+### Apply-flow selectors (Built)
+
+All apply-flow selectors (and the login marker) live in `app/browser/naukri_selectors.py`, each
+marked **VERIFIED <date>** (seen in a saved live page) or **NOT VERIFIED**.
+
+| Purpose | Selector | Status |
+|---|---|---|
+| Logged-in marker | `.nI-gNb-drawer__icon, .nI-gNb-icon-img, a[href*='/mnjuser/profile']` | Verified 2026-09-24 |
+| Company-site button | `#company-site-button` | Verified 2026-09-24 (`tests/fixtures/naukri/company_site.html`) |
+| Naukri apply button | `#apply-button` | Verified 2026-10-07 (`naukri_apply.html`) |
+| Already applied | `#already-applied` (+ exact-text "Applied" fallback) | Not verified |
+| Chatbot drawer, bot message, text input, radio labels, checkboxes, send | `.chatbot_DrawerContentWrapper …` | Not verified |
+| Apply confirmation | `.acp-header-container .job-title-text:has-text('Applied to')` (Naukri redirects to an apply-confirmation page) | Verified 2026-10-07 (`apply_success.html`) |
+| Apply confirmation (fallback) | header button turns "Applied" | Not verified |
+
+A wrong unverified selector can only make the applier stop (`needs_manual`, or an error →
+`failed`), never report a false `applied`. Verify them with `scripts/inspect_apply_flow.py` and add
+sanitized samples to `tests/fixtures/naukri/`.
+
+Planned hardening: move the search/card selectors above into `naukri_selectors.py` too.
 
 ## Session reuse via `storage_state` (Built)
 
@@ -81,35 +98,42 @@ Applying requires a logged-in Naukri account ([ADR-014](adr/ADR-014-encrypted-na
 
 ## Apply-flow inspection (Built, no apply)
 
-`scripts/inspect_apply_flow.py <job_id> [--click]` — a manual tool to learn the apply markup before
-any apply code exists.
+`scripts/inspect_apply_flow.py <job_id> [--click]` — a manual tool to learn / re-check the apply
+markup. Without `--click` nothing is clicked.
 
 - Loads the job URL from Postgres, opens it with the saved session, stops if the session expired.
 - Saves `artifacts/inspect/<job_id>/01_job_page.html` + full-page `.png`.
-- Reads the texts of `APPLY_BUTTON_CANDIDATES` and classifies them with
-  `classify_apply_button()` (`app/browser/apply_button.py`): `naukri_apply`, `company_site`,
-  `already_applied` or `unknown`. Prints the texts it saw, so wrong selectors are easy to spot.
-- `--click` acts **only** when the type is `naukri_apply`: clicks the button whose text is exactly
-  "Apply" / "Apply now" once, waits 5 s, saves `02_after_click.*`, then closes the browser. It
-  never answers questions and never presses a submit button.
-- The button selectors are **unverified**; the saved HTML is used to correct them.
+- Reads `(id, text)` of every `APPLY_BUTTONS` match (`read_apply_buttons()`) and classifies them with
+  `classify_apply_button()` (`app/browser/apply_button.py`): a known element id wins, else the exact
+  text → `naukri_apply`, `company_site`, `already_applied` or `unknown`. Prints what it saw.
+- `--click` acts **only** when the type is `naukri_apply` and after a `y/N` prompt: clicks the
+  button whose text is exactly "Apply" / "Apply now" once, waits 5 s, saves `02_after_click.*`,
+  then closes the browser. It never answers questions or clicks anything else.
+- **Warning:** for a job without screening questions, that one click **is a real application**
+  (seen live on 2026-10-07, job 23: Naukri went straight to the "Applied to …" page).
+- Verified so far: `company_site`, `naukri_apply`, the apply confirmation; not yet: already-applied,
+  chatbot ([Selectors](#apply-flow-selectors-built)).
 
 ## Rate limiting and delays
 
 | Rule | Status |
 |---|---|
 | One browser session against Naukri at a time (worker concurrency for browser activities = 1) | Planned |
+| Random 1–3 s pause between apply actions, per-key typing delay (80–200 ms) | Built (`job_applier.py`, `apply_page.py`) |
 | Random delay between detail pages: `DETAIL_PAGE_DELAY_SECONDS` (3.0) ± jitter | **In progress** — setting exists in `app/config.py:32`, not used anywhere |
-| Max detail pages per run (e.g. 30) and max applications per day (e.g. 10) | Planned |
+| Max applications per day (`MAX_APPLIES_PER_DAY`, IST day) | Built ([03](03-workflows.md#apply-safety-rails-built)) |
+| Max detail pages per run (e.g. 30) | Planned |
 | Back off for hours on HTTP 429 / challenge pages; no retries against a CAPTCHA | Planned |
 | Headed by default, real Chromium, no stealth plugins | Built (headed default); no-stealth is a rule |
 
-## Screenshots and artifacts (Planned)
+## Screenshots and artifacts
 
-Today only the inspection script writes artifacts, to the local, gitignored `artifacts/` folder.
+*Built (local):* every live apply saves page HTML + full-page screenshot per step to
+`artifacts/apply/<job_id>/<YYYYmmdd-HHMMSS>/NN_<step>.html|.png` (steps: `job_page`, `question`,
+`success`, `nothing`, `error`). Folder is gitignored, created `0700`; a failed snapshot is logged and
+never fails the apply. The inspection script writes to `artifacts/inspect/<job_id>/`.
 
-- Capture full-page screenshot + page HTML on: every apply step (before fill, before submit, after
-  submit) and on any browser activity failure.
+*Planned:*
 - Store in MinIO under `artifacts/{job_id}/{workflow_run_id}/{step}.png`
   ([ADR-013](adr/ADR-013-minio-artifacts.md)); keys recorded in `applications.artifact_keys`.
 - Screenshots may contain PII (the candidate's filled form) — same retention rules as the resume.
@@ -121,14 +145,70 @@ Today only the inspection script writes artifacts, to the local, gitignored `art
 | Search cards never appear | Warning, return `[]` | Same, plus screenshot; distinguish "no results" from "blocked". |
 | One card fails to parse | Warning, skip card | Same, plus counter in `pipeline_runs`. |
 | Browser crash / navigation timeout | Exception propagates, `main.py` aborts | Temporal activity retry (3×, backoff) with heartbeats. |
-| Session expired | n/a | Non-retryable `SessionExpired`, notify user. |
+| Session expired | Apply: `SessionExpiredError` ("session expired … run scripts.naukri_login") → `failed` | Notify user. |
 | CAPTCHA / bot challenge | n/a | Non-retryable `Blocked`, pause schedule, notify user. |
-| Submit outcome unknown (timeout after click) | n/a | Mark `failed` with `outcome_unknown`; **never auto-retry submit**; user checks Naukri manually. |
+| Apply not confirmed (no question and no "applied" signal within 15 s) | `ApplyNotConfirmedError` → `failed`, never `applied`, never retried (1 attempt) | Same. |
 
-## Dry-run mode (Planned)
+## Live apply (Built; chatbot selectors not verified)
 
-- `APPLY_DRY_RUN=true` is the default.
-- Dry-run executes the full apply flow up to the final submit click, captures screenshots, and
+A job without screening questions is applied by the Apply click itself; the next step is the
+confirmation page.
+
+`app/browser/job_applier.py` defines the `JobApplier` protocol:
+`apply(job_id, job, answers) -> ApplierResult(outcome, reason)` with outcome `applied`,
+`needs_manual` or `already_applied`; raises on unexpected errors. `ApplyService` builds it through a
+factory, so in `dry_run` it is never constructed ([03](03-workflows.md#apply-safety-rails-built)).
+
+`NaukriJobApplier` holds the decisions; `NaukriApplyPage` (`app/browser/apply_page.py`) is the thin
+Playwright side behind the `ApplyPage` protocol, so the decisions are tested with a fake page.
+
+```mermaid
+flowchart TD
+    A[Load encrypted session, HEADED browser] -->|missing / bad| E1[SessionExpiredError → failed]
+    A --> B[Open job URL] -->|no login marker| E1
+    B --> C{Apply button}
+    C -->|company_site / unknown| M[needs_manual]
+    C -->|already_applied| AA[already_applied]
+    C -->|naukri_apply| D[Click exact 'Apply']
+    D --> W{Next step, ≤15 s}
+    W -->|success signal| OK[applied]
+    W -->|nothing| E2[ApplyNotConfirmedError → failed]
+    W -->|question| Q{map_question}
+    Q -->|None| M2[needs_manual, reason = question text; nothing typed or sent]
+    Q -->|answer| S[Pick option / type, send] --> W
+```
+
+- Always headed (`BROWSER_HEADLESS` is ignored for apply): a human watches the first live runs.
+- At most 15 questions, then `ApplyNotConfirmedError`.
+- Naukri's chatbot asks one question at a time, so answers given **before** an unknown question
+  were already sent to it; the application itself is not submitted.
+
+### Question mapping (Built)
+
+`map_question(Question, answers)` in `app/browser/apply_questions.py` is pure (no browser, no LLM):
+fixed keyword rules for notice period, expected / current CTC, relocate, current location, years
+per skill (`skill_years`) and total experience. It returns `None` (→ `needs_manual`) when:
+
+- zero or more than one rule matches (e.g. "What is your CTC?", "expected vs current CTC");
+- a value rule meets a yes/no question ("Are you serving notice?"), or the relocate rule meets a
+  non-yes/no question ("Where would you relocate?");
+- options are given but not exactly one fits the value, or option / question has no unit;
+- the question is a checkbox (multi-select) question.
+
+Free-text answers carry their unit unless the question names one: `30 days`, `14 LPA`
+(`in lakhs` → `14`, `in INR` → `1400000`).
+
+### Manual first run (Built)
+
+`scripts/apply_one.py <job_id>` runs `ApplyService` in **live** mode for one job, without Temporal:
+prints job, status and today's count, refuses unless status is `approved` / `failed` /
+`needs_manual` (all only reachable after approval), and asks `y/N`. First run:
+`MAX_APPLIES_PER_DAY=1 uv run python -m scripts.apply_one <job_id>`.
+
+## Dry-run mode
+
+- *Built:* `APPLY_MODE=dry_run` is the default; dry-run logs the apply and never opens a browser.
+- *Planned:* dry-run executes the full apply flow up to the final submit click, captures screenshots, and
   records the application with `dry_run = true`.
 - Switching to live applying is a deliberate config change, logged at startup with a warning.
 

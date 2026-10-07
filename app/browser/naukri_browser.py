@@ -8,6 +8,7 @@ from playwright.async_api import (
     async_playwright,
 )
 
+from app.browser.naukri_selectors import LOGGED_IN_MARKER
 from app.browser.session_store import load_state
 
 logger = structlog.get_logger(__name__)
@@ -17,10 +18,6 @@ KEYWORD_INPUT = 'input[placeholder="Enter skills / designations / companies"]'
 LOCATION_INPUT = 'input[placeholder="Enter location"]'
 JOB_CARD = ".srp-jobtuple-wrapper"
 NAUKRI_LOGIN_URL = "https://www.naukri.com/nlogin/login"
-
-# Only shown to a logged-in user (header avatar / profile link).
-# Verified on a live login (2026-09-24).
-LOGGED_IN_MARKER = ".nI-gNb-drawer__icon, .nI-gNb-icon-img, a[href*='/mnjuser/profile']"
 
 
 class NaukriBrowser:

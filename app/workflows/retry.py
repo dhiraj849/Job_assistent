@@ -9,3 +9,7 @@ RETRY_POLICY = RetryPolicy(
     initial_interval=timedelta(seconds=10),
     backoff_coefficient=2.0,
 )
+
+# Applying is not safe to repeat blindly: a retry after a half-finished
+# browser apply could apply twice. One attempt; failures go to a human.
+APPLY_RETRY_POLICY = RetryPolicy(maximum_attempts=1)

@@ -16,4 +16,7 @@ class JobStatus(StrEnum):
     REJECTED = "rejected"
     EXPIRED = "expired"
     APPLIED_DRY_RUN = "applied_dry_run"
+    APPLIED = "applied"
+    # Approved, but a human must finish it (company-site apply, unknown question).
+    NEEDS_MANUAL = "needs_manual"
     FAILED = "failed"

@@ -1,8 +1,9 @@
 # 03 — Workflows
 
 > **Status: In progress.** On Temporal today: `JobDiscoveryWorkflow` (search + save, starts one child
-> per new job) and `JobApplicationWorkflow` (evaluate → human approval → **dry-run** apply) — see
-> [Discovery workflow](#discovery-workflow-built) and [Application workflow](#application-workflow-built-dry-run).
+> per new job) and `JobApplicationWorkflow` (evaluate → human approval → apply behind safety rails,
+> **dry-run by default**) — see [Discovery workflow](#discovery-workflow-built) and
+> [Application workflow](#application-workflow-built-dry-run).
 > Sections from [Target workflows](#target-workflows) on are the remaining design.
 > [Current flow](#current-flow-built) describes the older all-in-one pipeline in `main.py`.
 
@@ -92,7 +93,9 @@ sequenceDiagram
 
 `JobApplicationWorkflow.run(job_id) -> str` in `app/workflows/job_application_workflow.py`,
 workflow id **`job-{job_id}`**. Started by discovery (child) or `scripts/start_job_workflow.py`.
-Returns the final status. **Apply is DRY-RUN only**: `apply_job_dry_run` logs what it would do.
+Returns the final status. Apply runs through `apply_job` and its [safety rails](#apply-safety-rails-built).
+`APPLY_MODE=dry_run` is the default; live browser apply is built but its chatbot selectors are not
+yet verified ([06](06-browser-automation.md#live-apply-built-chatbot-selectors-not-verified)).
 
 | Activity | Reuses | Timeout | Result |
 |---|---|---|---|
@@ -102,9 +105,11 @@ Returns the final status. **Apply is DRY-RUN only**: `apply_job_dry_run` logs wh
 | `match_job(job)` | `JobMatchService` + `JobScoreService` + `JobMatchLevelService` | 2 min | `JobMatchItem` |
 | `save_match(job_id, item)` | `JobRepository.save_match` (upsert) | 30 s | — |
 | `update_job_status(job_id, status)` | `JobRepository.update_status` | 30 s | — |
-| `apply_job_dry_run(job_id)` | `JobRepository.get_job`, logs `apply_dry_run` | 30 s | message |
+| `apply_job(job_id)` | `ApplyService` (`app/services/apply_service.py`) | 5 min | `ApplyResult` |
+| `apply_job_dry_run(job_id)` | `JobRepository.get_job`, logs `apply_dry_run` | 30 s | message — **old histories only** (pre-patch), still registered on the worker |
 
-All use the shared retry policy (max 3 attempts). The profile is loaded inside activities from
+All except `apply_job` use the shared retry policy (max 3 attempts). `apply_job` uses
+`APPLY_RETRY_POLICY` (**1 attempt**): retrying a half-finished apply could apply twice. The profile is loaded inside activities from
 `settings.PROFILE_PATH` on every call.
 
 - **Signal** `decide(approved: bool, note: str = "")`. Ignored (logged) unless the status is
@@ -119,7 +124,8 @@ All use the shared retry policy (max 3 attempts). The profile is loaded inside a
   `scripts/decide_job.py <job_id> yes|no [note]` (checks status via the query, then signals),
   `scripts/start_job_workflow.py <job_id>` (for jobs saved before workflows existed).
 - **Tests:** `tests/workflows/test_job_application_workflow.py` — approved, rejected,
-  3-day timeout → expired, weak → filtered_out (time-skipping server, fake activities).
+  3-day timeout → expired, weak → filtered_out, needs_manual, cap wait + retry, cap → expired after
+  3 days, and replay of both the pre-patch and patched histories (time-skipping server, fake activities).
 
 ```mermaid
 stateDiagram-v2
@@ -133,14 +139,69 @@ stateDiagram-v2
     awaiting_approval --> approved: decide(yes)
     awaiting_approval --> rejected: decide(no)
     awaiting_approval --> expired: no decision in 3 days
-    approved --> applied_dry_run: apply_job_dry_run
+    approved --> applied_dry_run: apply_job (dry_run)
+    approved --> applied: apply_job (live) / already applied
+    approved --> needs_manual: company site / unknown question
+    approved --> failed: bad answers.yaml / browser error
+    approved --> approved: daily cap full, sleep until next IST day
+    approved --> expired: cap still full after 3 more days
     shortlisted --> failed: activity retries exhausted
     filtered_out --> [*]
     rejected --> [*]
     expired --> [*]
     applied_dry_run --> [*]
+    applied --> [*]
+    needs_manual --> [*]
     failed --> [*]
 ```
+
+### Apply safety rails (Built)
+
+`ApplyService.apply(job_id)` (called by the `apply_job` activity) runs these checks in order:
+
+1. **Lock** — `JobRepository.lock_applies()` takes a Postgres advisory transaction lock
+   (`pg_advisory_xact_lock`). It is held until the final status is committed, so two parallel
+   activities cannot both pass the cap check ("check-then-act" race).
+2. **Idempotency** — status already `applied` → `already_applied`, nothing else runs.
+3. **Daily cap** — counts jobs whose status became `applied` (live) or `applied_dry_run` (dry run)
+   since the start of the **IST day**. At `MAX_APPLIES_PER_DAY` → `skipped_cap` with
+   `retry_after_seconds` until IST midnight. Dry runs never use up the live quota.
+4. **Answers** — `answers.yaml` is loaded and validated in both modes; missing / invalid → `failed`.
+5. **Apply** — `APPLY_MODE=dry_run`: logs only; the browser applier is never even built.
+   `live`: `NaukriJobApplier.apply(job_id, job, answers)` (`app/browser/job_applier.py`) →
+   `ApplierResult` `applied` / `needs_manual` / `already_applied` with a `reason` (e.g. the unknown
+   question) copied into `ApplyResult.reason`; any exception (incl. expired session, apply not
+   confirmed) → `failed`. The lock stays held during the browser apply (minutes), which is fine
+   with one apply at a time.
+
+`ApplyResult` (`app/models/apply_result.py`): `outcome` (`applied`, `needs_manual`, `failed`,
+`skipped_cap`, `already_applied`), `dry_run`, `reason`, `retry_after_seconds`.
+
+The activity writes the final `jobs.status` itself, inside the locked transaction; the workflow only
+mirrors it for the query. Settings are read only inside the activity, never in the workflow, so a
+changed env var cannot change what a replayed workflow does.
+
+On `skipped_cap` the workflow `workflow.sleep()`s for `retry_after_seconds` (a durable timer) and
+tries again, up to `MAX_CAP_WAIT_DAYS` = 3 more days, then sets `expired`.
+
+### Versioning with `workflow.patched` (Built)
+
+The switch from `apply_job_dry_run` to `apply_job` is guarded by `workflow.patched("apply-job-v1")`.
+
+- Temporal recovers a workflow by **replaying** its code against its event history. If the code now
+  schedules `apply_job` where the history says `apply_job_dry_run`, replay fails with a
+  non-determinism error and the workflow is stuck.
+- `patched()` returns `True` when the code runs for the first time at that point (and records a
+  `core_patch` marker in history), or on replay of a history that has the marker. It returns `False`
+  only on replay of a history **without** the marker → the old branch runs.
+- So workflows that were `awaiting_approval` during the deploy take the **new** path when approved
+  (that code runs for the first time). The patch protects histories that had already scheduled
+  `apply_job_dry_run`.
+- Test: `tests/workflows/histories/apply_dry_run_v0.json` is a history recorded with the pre-patch
+  code; a `Replayer` test replays it with the current code.
+- Removal (later): once no pre-patch workflow is open, replace `patched()` with
+  `workflow.deprecate_patch("apply-job-v1")` and delete the old branch; after those workflows are
+  gone too, remove the call and stop registering `apply_job_dry_run`.
 
 ## Target workflows
 
@@ -248,7 +309,10 @@ stateDiagram-v2
 | `awaiting_approval` | Application workflow waiting for signal | `jobs.status` today (`applications.status` planned) | Yes |
 | `approved` / `rejected` / `expired` | Human decision, or 3-day timeout | `jobs.status` today (`applications.status` planned) | Yes (note is not persisted yet) |
 | `applied_dry_run` | Dry-run apply logged | `jobs.status` | Yes |
-| `applying` / `applied` / `failed` | Submission in progress / done / errored | `applications.status` | No |
+| `applied` | Applied for real (or Naukri already showed "Applied") | `jobs.status` | Yes |
+| `needs_manual` | Approved, but a human must finish it (company site, unknown question) | `jobs.status` | Yes |
+| `failed` | Activity retries exhausted, bad `answers.yaml`, browser error, expired session, apply not confirmed | `jobs.status` | Yes |
+| `applying` | Submission in progress | `applications.status` | No |
 
 Rules:
 

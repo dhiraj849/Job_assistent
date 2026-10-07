@@ -14,12 +14,15 @@ from temporalio import activity
 
 from app.config import settings
 from app.db.database import SessionLocal
+from app.browser.job_applier import NaukriJobApplier
 from app.db.job_repository import JobRepository
 from app.job_sources.naukri import NaukriJobSource
+from app.models.apply_result import ApplyResult
 from app.models.candidate_profile import CandidateProfile
 from app.models.job import Job
 from app.models.job_match_item import JobMatchItem
 from app.models.job_status import JobStatus
+from app.services.apply_service import ApplyService
 from app.services.job_filter_service import JobFilterService
 from app.services.job_match_level_service import JobMatchLevelService
 from app.services.job_match_service import JobMatchService
@@ -153,8 +156,30 @@ async def update_job_status(job_id: int, status: JobStatus) -> None:
 
 
 @activity.defn
+async def apply_job(job_id: int) -> ApplyResult:
+    """Apply to an approved job behind the safety rails (see ApplyService).
+
+    Settings are read here, never in the workflow: a changed env var must
+    not change what a replayed workflow does.
+    """
+    async with SessionLocal() as session:
+        service = ApplyService(
+            repository=JobRepository(session),
+            mode=settings.APPLY_MODE,
+            max_per_day=settings.MAX_APPLIES_PER_DAY,
+            answers_path=settings.ANSWERS_PATH,
+            applier_factory=NaukriJobApplier,
+        )
+        return await service.apply(job_id)
+
+
+@activity.defn
 async def apply_job_dry_run(job_id: int) -> str:
-    """DRY-RUN: only logs what a real apply would do. No browser, no clicks."""
+    """DRY-RUN: only logs what a real apply would do. No browser, no clicks.
+
+    Superseded by apply_job. Kept registered until no workflow history
+    started before the "apply-job-v1" patch is left (replay needs it).
+    """
     job = await _get_job(job_id)
     message = f"DRY-RUN: would apply to job {job_id} ({job.title} at {job.company}) via {job.url}"
     logger.info("apply_dry_run", job_id=job_id, url=job.url)

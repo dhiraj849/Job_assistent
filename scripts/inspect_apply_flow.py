@@ -1,24 +1,29 @@
-"""Inspect the apply flow of one job while logged in. Never applies.
+"""Inspect the apply flow of one job while logged in.
 
 Saves artifacts/inspect/<job_id>/01_job_page.html + .png and prints the apply
-button type. With --click (Naukri apply only) it clicks Apply ONCE, waits 5 s,
-saves 02_after_click.* and stops: no answers, no submit, no further clicks.
+button type. Without --click nothing is clicked.
+
+WARNING --click: it clicks Apply ONCE (Naukri apply only, after a y/N prompt),
+waits 5 s, saves 02_after_click.* and stops. For a job without screening
+questions that single click IS a real application (seen live on 2026-10-07).
+It never answers questions or clicks anything else.
 
 Usage: uv run python -m scripts.inspect_apply_flow <job_id> [--click]
 """
 
 import argparse
 import asyncio
-import re
 import sys
 from pathlib import Path
 
 from app.browser.apply_button import (
-    APPLY_BUTTON_CANDIDATES,
     ApplyButtonType,
     classify_apply_button,
+    read_apply_buttons,
 )
+from app.browser.apply_page import NAUKRI_APPLY_TEXT
 from app.browser.naukri_browser import NaukriBrowser
+from app.browser.naukri_selectors import APPLY_BUTTONS
 from app.browser.session_store import SessionStateError
 from app.config import settings
 from app.db.database import SessionLocal, engine
@@ -26,9 +31,6 @@ from app.db.job_repository import JobRepository
 from app.logging_config import setup_logging
 
 ARTIFACTS_DIR = Path("artifacts/inspect")
-
-# Exact text, so "Applied" / "Apply on company site" can never be clicked.
-NAUKRI_APPLY_TEXT = re.compile(r"^\s*apply( now)?\s*$", re.IGNORECASE)
 
 
 async def snapshot(page, folder: Path, name: str) -> None:
@@ -73,12 +75,11 @@ async def main(job_id: int, click: bool) -> int:
 
         await snapshot(browser.page, folder, "01_job_page")
 
-        buttons = browser.page.locator(APPLY_BUTTON_CANDIDATES)
-        texts = [text.strip() for text in await buttons.all_inner_texts() if text.strip()]
-        button_type = classify_apply_button(texts)
+        buttons = await read_apply_buttons(browser.page)
+        button_type = classify_apply_button(buttons)
 
         print(f"Job: {job.title} @ {job.company}")
-        print(f"Buttons seen: {texts}")
+        print(f"Buttons seen (id, text): {buttons}")
         print(f"Apply button type: {button_type.value}")
 
         if not click:
@@ -89,10 +90,21 @@ async def main(job_id: int, click: bool) -> int:
             print(f"--click ignored: button type is {button_type.value}, not naukri_apply.")
             return 0
 
-        await buttons.filter(has_text=NAUKRI_APPLY_TEXT).first.click()
+        # input() blocks; run it in a thread so the browser stays responsive.
+        answer = await asyncio.to_thread(
+            input,
+            "Clicking Apply may SUBMIT a real application if the job has no questions. "
+            "Click? [y/N] "
+        )
+        if answer.strip().lower() != "y":
+            print("Not clicked.")
+            return 0
+
+        await browser.page.locator(APPLY_BUTTONS).filter(has_text=NAUKRI_APPLY_TEXT).first.click()
         await browser.page.wait_for_timeout(5000)
         await snapshot(browser.page, folder, "02_after_click")
-        print("Stopped after the first click. Nothing was answered or submitted.")
+        print("Stopped after the first click. Nothing was answered; check 02_after_click.png "
+              "to see if Naukri applied right away.")
         return 0
     finally:
         await browser.close()
@@ -102,7 +114,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("job_id", type=int)
     parser.add_argument(
-        "--click", action="store_true", help="click Apply once, then stop"
+        "--click", action="store_true", help="click Apply once (may apply for real), then stop"
     )
     args = parser.parse_args()
 

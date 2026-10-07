@@ -56,8 +56,12 @@ Applying needs a logged-in Naukri session ([06](06-browser-automation.md#session
 - On session expiry, re-run the login script; no automatic refresh.
 - Losing `NAUKRI_STATE_KEY` only means logging in again; rotating it = new key + new login.
 
-Inspection artifacts (`artifacts/inspect/<job_id>/`, HTML + screenshots of logged-in pages) contain
-PII and are gitignored. `answers.yaml` (application answers: CTC, notice period…) is gitignored;
+Inspection artifacts (`artifacts/inspect/<job_id>/`) and apply artifacts
+(`artifacts/apply/<job_id>/<run>/`, HTML + screenshots of every apply step) show logged-in pages and
+the answers typed (CTC, notice period, location), so they contain PII. They are gitignored, local
+only (folder `0700`), never uploaded or sent to the LLM; delete them once a run is checked. Test
+fixtures in `tests/fixtures/naukri/` are cut down to the markup needed, with no account data.
+Logs record the question text and job id, never the typed answer values. `answers.yaml` (application answers: CTC, notice period…) is gitignored;
 only `answers.example.yaml` is committed.
 
 ## PII in the candidate profile and resume
@@ -78,7 +82,9 @@ Ollama fallback keeps data fully local.
 - No code path may submit an application without a recorded approval (workflow + DB CHECK
   constraint, [04](04-data-model.md#planned-indexes-and-constraints)).
 - No LLM-callable tool may submit, log in, or change account settings.
-- `APPLY_DRY_RUN=true` by default ([06](06-browser-automation.md#dry-run-mode-planned)).
+- `scripts/inspect_apply_flow.py --click` can submit a real application (no-question jobs) and asks
+  `y/N` first; it is not a "safe" inspection.
+- `APPLY_MODE=dry_run` by default; live apply only clicks the exact Naukri "Apply" and stops on any unknown question ([06](06-browser-automation.md#live-apply-built-chatbot-selectors-not-verified)).
 - Treat scraped job text as untrusted input to the LLM (prompt injection) ([05](05-agent-design.md#guardrails)).
 
 ## What must never be logged

@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import structlog
 from sqlalchemy import func, select, update
@@ -11,6 +11,9 @@ from app.models.job_match import JobMatchResult
 from app.models.job_status import JobStatus
 
 logger = structlog.get_logger(__name__)
+
+# Any fixed number works; it just names "the apply lock" for pg_advisory_xact_lock.
+APPLY_LOCK_KEY = 4201
 
 
 def _to_job(record: JobRecord) -> Job:
@@ -171,6 +174,28 @@ class JobRepository:
         await self.session.commit()
 
         logger.info("job_status_updated", job_id=job_id, status=status.value)
+
+    async def get_status(self, job_id: int) -> str | None:
+        return await self.session.scalar(
+            select(JobRecord.status).where(JobRecord.id == job_id)
+        )
+
+    async def lock_applies(self) -> None:
+        """Serialize applies until this transaction ends (commit or rollback).
+
+        Without it, two apply activities could both see "9 of 10 used" and
+        both apply. The lock is released automatically with the transaction.
+        """
+        await self.session.execute(select(func.pg_advisory_xact_lock(APPLY_LOCK_KEY)))
+
+    async def count_status_since(self, status: JobStatus, since: datetime) -> int:
+        """How many jobs moved to `status` at or after `since`."""
+        return await self.session.scalar(
+            select(func.count())
+            .select_from(JobRecord)
+            .where(JobRecord.status == status.value)
+            .where(JobRecord.status_updated_at >= since)
+        )
 
     async def get_pending_approvals(self) -> list[tuple[int, str, str, int, str]]:
         """Jobs waiting for a human decision: (id, title, company, score, level)."""

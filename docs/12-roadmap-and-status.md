@@ -32,22 +32,27 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Approval | CLI yes/no prompt (not persisted) | In progress | `app/agent/approval.py` |
 | Approval | Temporal `decide` signal + 3-day timeout (→ `expired`), status in `jobs.status` | Built | `app/workflows/job_application_workflow.py`, `scripts/list_pending.py`, `scripts/decide_job.py` |
 | Approval | Persist decision note / who / when (`applications` table), API instead of scripts | Planned | — |
-| Apply | Application preparation (answers from `answers.yaml`) | In progress | Loader + validation built: `app/services/answers_loader.py`, `app/models/application_answers.py`; not yet used by an apply activity |
-| Apply | Submission (dry-run + live) | Planned | — |
+| Apply | Application preparation (answers from `answers.yaml`) | Built | `app/services/answers_loader.py`, `app/models/application_answers.py`; validated by `ApplyService` before every apply |
+| Apply | Safety rails: `APPLY_MODE`, daily cap (advisory lock), idempotency, typed `ApplyResult`, no-retry apply | Built | `app/services/apply_service.py`, `app/workflows/activities.py` (`apply_job`) |
+| Apply | `workflow.patched("apply-job-v1")` versioning + replay test | Built | `app/workflows/job_application_workflow.py`, `tests/workflows/histories/` |
+| Apply | Remove `apply-job-v1` patch (`deprecate_patch`) once no pre-patch workflow is open | Planned | — |
+| Apply | Live browser apply (`NaukriJobApplier`: session check, button classify, chatbot answers, confirmation, step artifacts) | Built (first live run OK 2026-10-07: job 25, no questions, confirmed) | `app/browser/job_applier.py`, `app/browser/apply_page.py` |
+| Apply | Deterministic question mapper (no LLM; unknown → `needs_manual`) | Built | `app/browser/apply_questions.py` |
+| Apply | Manual one-job live apply with y/N confirmation | Built | `scripts/apply_one.py` |
+| Apply | `applications` table (UNIQUE job_id, outcome, reason, applied_at) for audit + DB-level idempotency | Planned | — |
 | Browser | Session reuse (`storage_state`, Fernet-encrypted, manual login script) | Built | `app/browser/session_store.py`, `scripts/naukri_login.py` |
 | Apply | Apply-flow inspection tool (button type, optional single click, no submit) | Built | `scripts/inspect_apply_flow.py`, `app/browser/apply_button.py` |
-| Apply | Verify apply button selectors on live pages (login marker verified) | In progress | `app/browser/apply_button.py` marked UNVERIFIED |
+| Apply | Verify apply selectors on live pages (verified: login marker, company-site + Naukri apply buttons, apply confirmation; not yet: already-applied, chatbot) | In progress | `app/browser/naukri_selectors.py`, `tests/fixtures/naukri/` |
 | Browser | Rate limiting / delays | Planned | — |
 | Browser | Screenshots / artifacts (MinIO) | Planned | — |
 | Workflows | Temporal `JobDiscoveryWorkflow` (search + save, starts one child per new job) | Built | `app/workflows/`, `scripts/start_discovery.py` |
-| Workflows | Temporal `JobApplicationWorkflow` (filter → semantic score → LLM match → approval → dry-run apply) | Built | `app/workflows/job_application_workflow.py`, `scripts/start_job_workflow.py` |
+| Workflows | Temporal `JobApplicationWorkflow` (filter → semantic score → LLM match → approval → apply with safety rails) | Built | `app/workflows/job_application_workflow.py`, `scripts/start_job_workflow.py` |
 | Workflows | `jobs.status` lifecycle (`JobStatus`) + Pydantic data converter | Built | `app/models/job_status.py`, migration `b5d33dd745b3`, `app/workflows/client.py` |
 | Workflows | Temporal Schedule for discovery | Planned | — |
-| Apply | Real (non-dry-run) apply activity | Planned | — |
 | API / UI | FastAPI, Next.js dashboard | Planned | — |
 | Observability | structlog console/JSON | Built | `app/logging_config.py` |
 | Observability | OpenTelemetry, Grafana stack, Langfuse | Planned | — |
-| Testing | Unit tests (48) | Built | `tests/` |
+| Testing | Unit tests (63) | Built | `tests/` |
 | Testing | Integration tests, evals | Planned | — |
 | CI | GitHub Actions | Planned | — |
 | Infra | Docker Compose: Postgres 16, Qdrant | Built | `docker-compose.yml` |

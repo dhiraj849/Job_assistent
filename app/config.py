@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,13 @@ class Settings(BaseSettings):
 
     # Standard answers for apply questions (notice period, CTC, skill years)
     ANSWERS_PATH: Path = Path("answers.yaml")
+
+    # Apply safety rails. dry_run never opens a browser; switch to "live"
+    # only on purpose. The cap protects the Naukri account from looking
+    # like a bot (and me from mass-applying by mistake).
+    APPLY_MODE: Literal["dry_run", "live"] = "dry_run"
+
+    MAX_APPLIES_PER_DAY: int = Field(default=10, ge=1)
 
     # Browser
     BROWSER_HEADLESS: bool = False

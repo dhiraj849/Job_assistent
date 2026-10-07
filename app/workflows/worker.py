@@ -36,7 +36,8 @@ async def main() -> None:
             activities.match_job,
             activities.save_match,
             activities.update_job_status,
-            activities.apply_job_dry_run,
+            activities.apply_job,
+            activities.apply_job_dry_run,  # old histories (pre "apply-job-v1")
         ],
         # Many application workflows can start at once; cap parallel
         # activities so we never run a flood of LLM calls or browsers.

@@ -54,9 +54,14 @@ Notes on current behaviour:
 - `jobs.status` is a plain `String(30)`, not a DB enum, so adding a value needs no migration. Allowed
   values live in one place: `JobStatus` (`app/models/job_status.py`): `discovered`, `filtered_out`,
   `shortlisted`, `matched`, `awaiting_approval`, `approved`, `rejected`, `expired`,
-  `applied_dry_run`, `failed`. Only the Temporal workflows change it, through
+  `applied_dry_run`, `applied`, `needs_manual`, `failed` (`applied` / `needs_manual` were added
+  without a migration). Only the Temporal workflows and their activities change it, through
   `JobRepository.update_status` (which also sets `status_updated_at`). The migration backfilled
   `matched` for jobs that already had a `job_matches` row.
+- The daily apply cap is derived from `jobs.status` + `status_updated_at`
+  (`JobRepository.count_status_since`, served by `ix_jobs_status`), and applies are serialized with a
+  Postgres advisory transaction lock (`JobRepository.lock_applies`, key `APPLY_LOCK_KEY`). No
+  `applications` table yet ([03](03-workflows.md#apply-safety-rails-built)).
 - `JobRepository.save_match` is an upsert (`ON CONFLICT (job_id) DO UPDATE`): a retried activity or a
   re-run workflow overwrites the match, and the latest evaluation wins.
 - `JobRepository.get_pending_approvals()` joins `jobs` (status `awaiting_approval`) with `job_matches`

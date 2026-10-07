@@ -59,6 +59,16 @@ POSTGRES_DB=job_agent
 `docker-compose.yml` reads `POSTGRES_USER/PASSWORD/DB` from `.env`; the app reads the same
 variables, so one file configures both.
 
+Apply safety settings (optional; defaults shown):
+
+```dotenv
+APPLY_MODE=dry_run          # dry_run | live — live is not implemented yet (Task 3) and ends as "failed"
+MAX_APPLIES_PER_DAY=10      # per IST calendar day; dry runs and live applies are counted separately
+```
+
+`APPLY_MODE` and `MAX_APPLIES_PER_DAY` are read by the `apply_job` activity at run time; restart the
+worker after changing `.env`.
+
 ## One-command stack (Makefile)
 
 After first-time setup, the `Makefile` in the project root drives the whole stack.
@@ -98,7 +108,7 @@ Notes:
 | Start discovery workflow (needs worker; starts one `job-{id}` workflow per new job) | `uv run python -m scripts.start_discovery --keyword "Python" --location "Noida"` |
 | Start the application workflow for one existing job | `uv run python -m scripts.start_job_workflow <job_id>` |
 | List jobs awaiting your approval | `uv run python -m scripts.list_pending` |
-| Approve / reject a job (apply is DRY-RUN only) | `uv run python -m scripts.decide_job <job_id> yes\|no ["note"]` |
+| Approve / reject a job (apply follows `APPLY_MODE`, default dry-run) | `uv run python -m scripts.decide_job <job_id> yes\|no ["note"]` |
 | Log in to Naukri once and save the encrypted session (headed) | `uv run python -m scripts.naukri_login` |
 | Inspect a job's apply button, logged in (saves to `artifacts/inspect/<id>/`) | `uv run python -m scripts.inspect_apply_flow <job_id>` |
 | Same, and click Apply once then stop (never submits) | `uv run python -m scripts.inspect_apply_flow <job_id> --click` |
