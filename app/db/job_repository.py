@@ -9,6 +9,7 @@ from app.db.models import ApplicationRecord, JobDecisionRecord, JobMatchRecord, 
 from app.models.application import Application, ApplicationOutcome
 from app.models.decision import Decision, JobDecision
 from app.models.job import Job
+from app.models.job_details import JobDetailPage, JobDetails
 from app.models.job_match import JobMatchResult
 from app.models.job_status import JobStatus
 
@@ -44,15 +45,22 @@ APPLY_LOCK_KEY = 4201
 
 
 def _to_job(record: JobRecord) -> Job:
-    """Turn a database row into the Job DTO used by services."""
+    """Turn a database row into the Job DTO used by services.
+
+    The full JD wins over the card snippet, so filter, embeddings and the
+    LLM all see the best text we have without knowing where it came from.
+    """
+    details = JobDetails.model_validate(record.details) if record.details else None
     return Job(
         title=record.title,
         company=record.company,
         location=record.location or "",
-        description=record.description or "",
+        description=record.description_full or record.description or "",
         experience=record.experience,
+        salary=details.salary if details else None,
         skills=record.skills or [],
         url=record.url,
+        details=details,
     )
 
 
@@ -190,6 +198,26 @@ class JobRepository:
         """Load one job by id, or None if it does not exist."""
         record = await self.session.get(JobRecord, job_id)
         return _to_job(record) if record else None
+
+    async def save_details(self, job_id: int, page: JobDetailPage) -> None:
+        """Store what the detail page said. Overwrites: the newest read wins,
+        and a retry writes the same values (idempotent)."""
+        await self.session.execute(
+            update(JobRecord)
+            .where(JobRecord.id == job_id)
+            .values(
+                description_full=page.description,
+                details=page.details.model_dump(mode="json"),
+                details_fetched_at=func.now(),
+            )
+        )
+        await self.session.commit()
+        logger.info(
+            "job_details_saved",
+            job_id=job_id,
+            chars=len(page.description),
+            source=page.details.source,
+        )
 
     async def update_status(self, job_id: int, status: JobStatus) -> bool:
         """Set a job's lifecycle status and when it changed.

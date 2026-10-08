@@ -12,12 +12,15 @@ from functools import cache
 import structlog
 from qdrant_client import QdrantClient
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from app.config import settings
 from app.db.database import SessionLocal
 from app.browser.job_applier import NaukriJobApplier
 from app.db.job_repository import JobRepository
 from app.job_sources.naukri import NaukriJobSource
+from app.job_sources.naukri_detail import fetch_job_page
+from app.job_sources.naukri_detail_parser import DetailParseError, parse_job_detail
 from app.models.apply_result import ApplyResult
 from app.models.candidate_profile import CandidateProfile
 from app.models.decision import Decision
@@ -104,6 +107,37 @@ async def _get_job(job_id: int) -> Job:
 
 @activity.defn
 async def load_job(job_id: int) -> Job:
+    return await _get_job(job_id)
+
+
+@activity.defn
+async def fetch_job_details(job_id: int) -> Job:
+    """Read the job's detail page (full JD + details), save it, return the job.
+
+    Runs on BROWSER_TASK_QUEUE (one at a time). Already fetched -> no
+    request at all, so a retry or a re-run workflow costs Naukri nothing.
+    A page that loads but cannot be parsed is non-retryable: reading the
+    same markup again gives the same result.
+    """
+    job = await _get_job(job_id)
+    if job.details is not None:
+        return job
+
+    # Polite gap before every request; with one activity at a time on the
+    # browser queue this is the minimum time between two Naukri pages.
+    await asyncio.sleep(settings.DETAIL_PAGE_DELAY_SECONDS)
+    html = await fetch_job_page(
+        job.url, headless=settings.BROWSER_HEADLESS, timeout_ms=settings.BROWSER_TIMEOUT_MS
+    )
+
+    try:
+        page = parse_job_detail(html)
+    except DetailParseError as error:
+        logger.error("job_detail_parse_failed", job_id=job_id, url=job.url, error=str(error))
+        raise ApplicationError(str(error), type="DetailParseError", non_retryable=True) from error
+
+    async with SessionLocal() as session:
+        await JobRepository(session).save_details(job_id, page)
     return await _get_job(job_id)
 
 

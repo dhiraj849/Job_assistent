@@ -25,6 +25,15 @@ class JobRecord(Base):
     description: Mapped[str | None] = mapped_column(Text)
     skills: Mapped[list[str]] = mapped_column(JSONB, default=list)
 
+    # From the job's detail page (fetch_job_details). Separate from
+    # description (the search-card snippet) so we always know which one we
+    # have; all NULL until the page was read.
+    description_full: Mapped[str | None] = mapped_column(Text)
+    # JobDetails as JSON (salary, experience, role, ...). JSONB until we
+    # need to query a field; then it gets its own typed column.
+    details: Mapped[dict | None] = mapped_column(JSONB)
+    details_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -10,8 +10,10 @@ from qdrant_client.models import (
 
 logger = structlog.get_logger(__name__)
 
-# Named after the embedding model, so a future model gets its own collection
-COLLECTION = "jobs_bge_small_v1"
+# Named after the embedding model and the embedded text, so a change to
+# either gets its own collection (scores across versions don't compare).
+# v1: title + skills + card snippet. v2: title + skills + full JD when fetched.
+COLLECTION = "jobs_bge_small_v2"
 VECTOR_SIZE = 384
 
 

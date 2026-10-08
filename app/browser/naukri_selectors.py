@@ -1,4 +1,4 @@
-"""Every CSS selector the apply flow uses, in one place.
+"""Every CSS selector the apply flow and the detail-page reader use, in one place.
 
 Naukri changes its markup without notice; when a live apply breaks, this is
 the only file to fix. Each selector says where it was checked:
@@ -54,3 +54,21 @@ APPLY_SUCCESS_CONTAINER = ".acp-header-container .job-title-text"
 APPLY_SUCCESS_TEXT = "Applied to"
 APPLY_SUCCESS = f"{APPLY_SUCCESS_CONTAINER}:has-text('{APPLY_SUCCESS_TEXT}')"
 # (The header button turning into "Applied" is also accepted; see apply_page.)
+
+# --- Job detail page (read only, no clicks) -----------------------------------------
+
+# Primary source: the schema.org JobPosting JSON-LD block Naukri embeds for
+# search engines. A public standard, so it changes far less than CSS classes.
+# VERIFIED 2026-10-07 (tests/fixtures/naukri/job_detail_*.html, 3 companies).
+JOB_POSTING_JSON_LD = "script[type='application/ld+json']"
+JOB_POSTING_TYPE = "JobPosting"
+
+# Fallback: the rendered JD block. Class names are CSS-module hashes
+# ("styles_JDC__dang-inner-html__h0K4t"); the hash changes on Naukri deploys,
+# so we match the part before it. The trailing "__" keeps it from matching
+# longer names that share the prefix.
+# VERIFIED 2026-10-07 (same fixtures).
+JOB_DESCRIPTION_CLASS_PREFIX = "styles_JDC__dang-inner-html__"
+
+# Either one present means the page has rendered far enough to read.
+JOB_DETAIL_READY = f"{JOB_POSTING_JSON_LD}, [class*='{JOB_DESCRIPTION_CLASS_PREFIX}']"

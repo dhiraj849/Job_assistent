@@ -5,16 +5,19 @@ from temporalio import workflow
 from temporalio.exceptions import ActivityError
 
 from app.workflows.retry import APPLY_RETRY_POLICY, RETRY_POLICY
+from app.workflows.task_queues import BROWSER_TASK_QUEUE
 
 # Activities import browser/DB/LLM libraries. Passing them through keeps the
 # workflow sandbox from re-importing them (they are never called here directly).
 with workflow.unsafe.imports_passed_through():
     from app.models.apply_result import ApplyOutcome, ApplyResult
     from app.models.decision import Decision
+    from app.models.job import Job
     from app.models.job_status import JobStatus
     from app.workflows.activities import (
         apply_job,
         apply_job_dry_run,
+        fetch_job_details,
         filter_job,
         is_applied_live,
         load_job,
@@ -30,6 +33,13 @@ APPROVAL_TIMEOUT = timedelta(days=3)
 DB_TIMEOUT = timedelta(seconds=30)
 # Covers waiting for the apply lock plus (later) a real browser apply.
 APPLY_TIMEOUT = timedelta(minutes=5)
+# One page: delay + browser start + load. Time waiting in the browser
+# queue is not counted (start_to_close starts when a worker picks it up).
+DETAILS_TIMEOUT = timedelta(minutes=2)
+# Queue wait + all attempts. Without it a down browser worker would park
+# the workflow here forever; after it we go on with the snippet. A burst of
+# ~20 new jobs drains in a few minutes, so 30 minutes is plenty.
+DETAILS_DEADLINE = timedelta(minutes=30)
 
 # Version marker for the apply_job_dry_run -> apply_job change (see _run).
 APPLY_PATCH = "apply-job-v1"
@@ -39,6 +49,8 @@ APPROVAL_PATCH = "record-approval-v1"
 SKIP_APPLIED_PATCH = "skip-if-applied-v1"
 # Version marker for update_job_status(REJECTED/EXPIRED) -> record_decision.
 DECISION_PATCH = "record-decision-v1"
+# Version marker for the fetch_job_details step between filter and semantic score.
+DETAILS_PATCH = "fetch-details-v1"
 
 # If the daily cap is full, try again on this many following days, then give up:
 # an approval older than that is probably stale.
@@ -96,6 +108,14 @@ class JobApplicationWorkflow:
         )
         if not keep:
             return await self._set_status(job_id, JobStatus.FILTERED_OUT)
+
+        # 1b. Full JD from the detail page, so embeddings and the LLM judge
+        # the real job, not the 90-char card snippet. After the filter on
+        # purpose: it only reads title + skills, so filtered-out jobs cost
+        # no page request. Behind a patch: workflows already past this
+        # point (e.g. waiting for approval) replay without it.
+        if workflow.patched(DETAILS_PATCH):
+            job = await self._fetch_details(job_id, job)
 
         # 2. Semantic similarity to the profile (Qdrant)
         score = await workflow.execute_activity(
@@ -193,6 +213,25 @@ class JobApplicationWorkflow:
                 await workflow.sleep(timedelta(seconds=result.retry_after_seconds))
 
         return await self._set_status(job_id, JobStatus.EXPIRED)
+
+    async def _fetch_details(self, job_id: int, job: Job) -> Job:
+        try:
+            return await workflow.execute_activity(
+                fetch_job_details,
+                job_id,
+                task_queue=BROWSER_TASK_QUEUE,
+                start_to_close_timeout=DETAILS_TIMEOUT,
+                schedule_to_close_timeout=DETAILS_DEADLINE,
+                retry_policy=RETRY_POLICY,
+            )
+        except ActivityError as error:
+            # Details improve the match but are not required: go on with the
+            # snippet instead of failing the job. Visible in the log and as
+            # jobs.details_fetched_at IS NULL.
+            workflow.logger.warning(
+                "job %s: details not fetched (%s), using the search snippet", job_id, error.cause
+            )
+            return job
 
     async def _record_decision(
         self, job_id: int, decision: Decision, decided_at: datetime, note: str

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from temporalio import activity
 from temporalio.client import WorkflowHandle, WorkflowHistory
+from temporalio.exceptions import ApplicationError
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
@@ -19,10 +20,16 @@ from temporalio.worker import Replayer, Worker
 from app.models.apply_result import ApplyOutcome, ApplyResult
 from app.models.decision import Decision
 from app.models.job import Job
+from app.models.job_details import JobDetails
 from app.models.job_match import JobMatchResult
 from app.models.job_match_item import JobMatchItem
 from app.models.job_status import JobStatus
-from app.workflows.job_application_workflow import APPROVAL_TIMEOUT, JobApplicationWorkflow
+from app.workflows.job_application_workflow import (
+    APPROVAL_TIMEOUT,
+    DETAILS_DEADLINE,
+    JobApplicationWorkflow,
+)
+from app.workflows.task_queues import BROWSER_TASK_QUEUE
 
 TASK_QUEUE = "test-job-application"
 JOB_ID = 42
@@ -35,6 +42,14 @@ JOB = Job(
     url="https://example.com/42",
 )
 
+
+# What fetch_job_details returns: the same job with the full JD.
+DETAILED_JOB = JOB.model_copy(
+    update={
+        "description": "Full JD: build FastAPI services, Postgres, Docker, AWS. " * 3,
+        "details": JobDetails(source="json_ld", skills=["Python", "FastAPI"]),
+    }
+)
 
 HISTORIES = Path(__file__).parent / "histories"
 
@@ -51,14 +66,17 @@ def make_activities(
     apply_results: list[ApplyResult],
     applied_live: bool = False,
     calls: list[str] | None = None,
+    seen_jobs: list[Job] | None = None,
 ):
     """Fake activities; statuses/applied record what the workflow did.
 
     apply_job returns apply_results one by one (last one repeats).
     applied_live is what the applications table says; calls logs
-    load_job / match_job (the LLM) runs.
+    load_job / match_job (the LLM) runs; seen_jobs gets the Job that
+    semantic_score and match_job received.
     """
     calls = calls if calls is not None else []
+    seen_jobs = seen_jobs if seen_jobs is not None else []
 
     @activity.defn(name="is_applied_live")
     async def is_applied_live(job_id: int) -> bool:
@@ -75,11 +93,13 @@ def make_activities(
 
     @activity.defn(name="semantic_score")
     async def semantic_score(job_id: int, job: Job) -> float | None:
+        seen_jobs.append(job)
         return 0.82
 
     @activity.defn(name="match_job")
     async def match_job(job: Job) -> JobMatchItem:
         calls.append("match_job")
+        seen_jobs.append(job)
         return JobMatchItem(
             job=job,
             match=JobMatchResult(
@@ -118,6 +138,22 @@ def make_activities(
             save_match, update_job_status, record_approval, record_decision, apply_job]
 
 
+def make_browser_activities(details: str, calls: list[str]):
+    """Fake fetch_job_details for the browser queue.
+
+    details: "ok" returns DETAILED_JOB, "fail" fails like a broken page.
+    """
+
+    @activity.defn(name="fetch_job_details")
+    async def fetch_job_details(job_id: int) -> Job:
+        calls.append("fetch_job_details")
+        if details == "fail":
+            raise ApplicationError("no job description found", type="DetailParseError", non_retryable=True)
+        return DETAILED_JOB
+
+    return [fetch_job_details]
+
+
 async def wait_for_status(handle: WorkflowHandle, expected: str) -> None:
     for _ in range(100):
         if await handle.query(JobApplicationWorkflow.current_status) == expected:
@@ -132,15 +168,19 @@ async def run_workflow(
     apply_results: list[ApplyResult] = [DRY_RUN_APPLIED],
     applied_live: bool = False,
     calls: list[str] | None = None,
+    details: str = "ok",
+    seen_jobs: list[Job] | None = None,
 ):
     """Run one workflow. decision=None means nobody answers (timeout).
 
+    details: what fetch_job_details does ("ok" / "fail").
     Returns (result, statuses, applied, history).
     """
     statuses: list[str] = []
     applied: list[int] = []
+    calls = calls if calls is not None else []
     activities = make_activities(
-        match_level, statuses, applied, apply_results, applied_live, calls
+        match_level, statuses, applied, apply_results, applied_live, calls, seen_jobs
     )
 
     async with await WorkflowEnvironment.start_time_skipping(
@@ -151,6 +191,10 @@ async def run_workflow(
             task_queue=TASK_QUEUE,
             workflows=[JobApplicationWorkflow],
             activities=activities,
+        ), Worker(
+            env.client,
+            task_queue=BROWSER_TASK_QUEUE,
+            activities=make_browser_activities(details, calls),
         ):
             handle = await env.client.start_workflow(
                 JobApplicationWorkflow.run,
@@ -231,10 +275,10 @@ def test_pre_patch_history_replays_on_old_path():
 def test_patched_history_replays_on_new_path():
     _, _, _, history = asyncio.run(run_workflow("strong", decision=True))
 
-    # The new path leaves patch markers (skip-if-applied + approval + apply)
-    # and never schedules the old activities.
+    # The new path leaves patch markers (skip-if-applied + details + approval
+    # + apply) and never schedules the old activities.
     markers = [e for e in history.events if e.HasField("marker_recorded_event_attributes")]
-    assert [m.marker_recorded_event_attributes.marker_name for m in markers] == ["core_patch"] * 3
+    assert [m.marker_recorded_event_attributes.marker_name for m in markers] == ["core_patch"] * 4
     assert "apply_job_dry_run" not in history.to_json()
     assert '"approved"' not in history.to_json()  # no update_job_status(APPROVED)
 
@@ -330,7 +374,7 @@ def test_not_applied_job_runs_the_full_pipeline():
     )
 
     assert result == "applied_dry_run"
-    assert calls == ["load_job", "match_job"]
+    assert calls == ["load_job", "fetch_job_details", "match_job"]
 
 
 # record_approval_v1.json is a REAL history (job-38 on the local Temporal
@@ -389,3 +433,95 @@ def test_pre_decision_patch_histories_replay_on_old_path():
         history = WorkflowHistory.from_json(name, (HISTORIES / f"{name}.json").read_text())
         asyncio.run(replayer().replay_workflow(history))
         assert "record_decision" not in history.to_json()
+
+
+# --- Detail page (patch "fetch-details-v1") -----------------------------------
+
+
+def test_full_jd_reaches_semantic_score_and_the_llm():
+    calls: list[str] = []
+    seen: list[Job] = []
+    result, _, _, history = asyncio.run(
+        run_workflow("strong", decision=True, calls=calls, seen_jobs=seen)
+    )
+
+    assert result == "applied_dry_run"
+    # After load_job (and the filter), before the LLM.
+    assert calls == ["load_job", "fetch_job_details", "match_job"]
+    assert [job.description for job in seen] == [DETAILED_JOB.description] * 2
+    assert all(job.details is not None for job in seen)
+    asyncio.run(replayer().replay_workflow(history))
+
+
+def test_broken_detail_page_falls_back_to_the_snippet():
+    seen: list[Job] = []
+    result, statuses, _, _ = asyncio.run(
+        run_workflow("strong", decision=True, details="fail", seen_jobs=seen)
+    )
+
+    # The job is not failed: it goes on with the card snippet.
+    assert result == "applied_dry_run"
+    assert "failed" not in statuses
+    assert [job.description for job in seen] == [JOB.description] * 2
+
+
+def test_details_run_on_the_browser_queue_with_a_deadline():
+    _, _, _, history = asyncio.run(run_workflow("strong", decision=True))
+
+    [scheduled] = [
+        e.activity_task_scheduled_event_attributes for e in history.events
+        if e.HasField("activity_task_scheduled_event_attributes")
+        and e.activity_task_scheduled_event_attributes.activity_type.name == "fetch_job_details"
+    ]
+    # One-at-a-time queue, and a deadline so a down browser worker cannot
+    # park the workflow forever (Temporal then fails the activity and we
+    # fall back to the snippet, like test_broken_detail_page_...).
+    assert scheduled.task_queue.name == BROWSER_TASK_QUEUE
+    assert scheduled.schedule_to_close_timeout.ToTimedelta() == DETAILS_DEADLINE
+
+
+def test_filtered_out_job_reads_no_detail_page():
+    calls: list[str] = []
+
+    async def run():
+        # filter_job says no: swap in a filter that rejects.
+        statuses: list[str] = []
+        activities = make_activities("strong", statuses, [], [DRY_RUN_APPLIED], calls=calls)
+
+        @activity.defn(name="filter_job")
+        async def reject(job: Job) -> bool:
+            return False
+
+        activities = [reject if a.__name__ == "filter_job" else a for a in activities]
+        async with await WorkflowEnvironment.start_time_skipping(
+            data_converter=pydantic_data_converter
+        ) as env:
+            async with Worker(
+                env.client, task_queue=TASK_QUEUE,
+                workflows=[JobApplicationWorkflow], activities=activities,
+            ), Worker(
+                env.client, task_queue=BROWSER_TASK_QUEUE,
+                activities=make_browser_activities("ok", calls),
+            ):
+                return await env.client.execute_workflow(
+                    JobApplicationWorkflow.run, JOB_ID,
+                    id=f"job-{uuid.uuid4()}", task_queue=TASK_QUEUE,
+                )
+
+    assert asyncio.run(run()) == "filtered_out"
+    assert "fetch_job_details" not in calls
+
+
+# awaiting_approval_v1.json is a REAL history (job-37 on the local Temporal
+# server, exported 2026-10-08 while it waited for approval): one of the 7
+# workflows in flight when "fetch-details-v1" shipped. It already ran
+# semantic_score and match_job without a detail fetch, so it must replay on
+# the old path.
+
+
+def test_real_in_flight_history_replays_without_details():
+    history = WorkflowHistory.from_json(
+        "job-37", (HISTORIES / "awaiting_approval_v1.json").read_text()
+    )
+    asyncio.run(replayer().replay_workflow(history))
+    assert "fetch_job_details" not in history.to_json()
