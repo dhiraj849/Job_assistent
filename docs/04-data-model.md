@@ -7,8 +7,8 @@ holds derived vectors keyed by `jobs.id` and can be rebuilt from Postgres
 ## Current tables (Built)
 
 Defined in `app/db/models.py`, created by migrations `e38fb9a63e38` (jobs), `6fc31f68061a` (job_matches) and
-`b5d33dd745b3` (`jobs.status`, `jobs.status_updated_at`), `f734e9e72583` (applications) and
-`7a754c37777b` (job_decisions).
+`b5d33dd745b3` (`jobs.status`, `jobs.status_updated_at`), `f734e9e72583` (applications),
+`7a754c37777b` (job_decisions) and `b50143f8cf9c` (`jobs.description_full`, `details`, `details_fetched_at`).
 
 ```mermaid
 erDiagram
@@ -23,8 +23,11 @@ erDiagram
         varchar_300 company
         varchar_300 location "nullable"
         varchar_100 experience "nullable, raw text e.g. 3-5 Yrs"
-        text description "nullable, search-card snippet today"
+        text description "nullable, search-card snippet (never overwritten)"
         jsonb skills "list of tag strings"
+        text description_full "nullable, full JD from the detail page"
+        jsonb details "nullable, JobDetails (salary, experience, role, ...)"
+        timestamptz details_fetched_at "nullable, NULL = detail page not read"
         timestamptz first_seen_at "default now()"
         timestamptz last_seen_at "default now(), bumped on re-sighting"
         varchar_30 status "indexed, default discovered (JobStatus)"
@@ -115,6 +118,13 @@ Notes on current behaviour:
   `applied_at` since IST midnight (`JobRepository.count_applied_since`). Applies are serialized with a
   Postgres advisory transaction lock (`JobRepository.lock_applies`, key `APPLY_LOCK_KEY`)
   ([03](03-workflows.md#apply-safety-rails-built)).
+- Job detail page data (`b50143f8cf9c`): three nullable columns on `jobs`, so the migration needs no
+  backfill. `description_full` is kept apart from `description` (the card snippet) so we always know
+  which text we have. `details` is `JobDetails` (`app/models/job_details.py`) as JSONB — not queried
+  yet; a field gets a typed column once something filters on it. `JobRepository.save_details`
+  overwrites all three in one commit (idempotent). `_to_job` returns `description_full or
+  description`, fills `Job.details` and `Job.salary`, so filter, embeddings and the LLM all get the
+  best text without knowing its source.
 - `JobRepository.save_match` is an upsert (`ON CONFLICT (job_id) DO UPDATE`): a retried activity or a
   re-run workflow overwrites the match, and the latest evaluation wins.
 - `JobRepository.get_pending_approvals()` joins `jobs` (status `awaiting_approval`) with `job_matches`
@@ -185,10 +195,6 @@ erDiagram
         varchar resume_object_key "MinIO key"
         boolean is_active
         timestamptz created_at
-    }
-    jobs {
-        int id PK
-        timestamptz details_fetched_at
     }
     job_matches {
         int id PK

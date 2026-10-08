@@ -11,7 +11,9 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Discovery | Naukri search (first results page) via Playwright | Built | `app/job_sources/naukri.py`, `app/browser/naukri_browser.py` |
 | Discovery | Card extraction (title, company, location, exp, snippet, skills, URL) | Built | `app/job_sources/naukri_extractor.py` |
 | Discovery | Pagination | Planned | — |
-| Discovery | Detail-page scraping (full JD) | In progress | `scripts/inspect_job_page.py` (HTML capture only), unused `DETAIL_PAGE_DELAY_SECONDS` |
+| Discovery | Detail-page scraping (full JD + details: JSON-LD, DOM fallback; one page at a time on `job-agent-browser`, `DETAIL_PAGE_DELAY_SECONDS`; patch `fetch-details-v1`) | Built (live fetch verified 2026-10-07 on 3 jobs) | `app/job_sources/naukri_detail.py`, `naukri_detail_parser.py`, `activities.fetch_job_details`, migration `b50143f8cf9c`, `tests/job_sources/` |
+| Discovery | Backfill details for jobs saved before detail fetching | Planned | — |
+| Discovery | Random jitter on the detail-page delay | Planned | — |
 | Discovery | Scheduled runs | Planned | — |
 | Storage | `jobs` table, dedupe by URL, `last_seen_at` refresh | Built | `app/db/job_repository.py:19`, migration `e38fb9a63e38` |
 | Storage | `job_matches` table | Built | migration `6fc31f68061a` |
@@ -22,7 +24,8 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Matching | Keyword filter (hardcoded) | Built | `app/services/job_filter_service.py` |
 | Matching | Profile-driven filter keywords / role focus | Planned | — |
 | Retrieval | fastembed bge-small embeddings | Built | `app/vector/embedder.py` |
-| Retrieval | Qdrant collection per model, lazy sync, ID-filtered search | Built | `app/vector/job_vector_store.py`, `app/services/job_ranker.py` |
+| Retrieval | Qdrant collection per model + text version (`jobs_bge_small_v2`: full JD), lazy sync, ID-filtered search | Built | `app/vector/job_vector_store.py`, `app/services/job_ranker.py` |
+| Retrieval | Re-tune `MIN_SCORE` 0.7 for full-JD texts (scores rise +0.01–0.06) | Planned | `docs/07` |
 | Retrieval | Full re-sync script | Built | `scripts/sync_jobs_to_qdrant.py` |
 | LLM | Claude structured-output evaluation | Built | `app/llm/claude_code.py`, `app/services/job_match_service.py` |
 | LLM | `LLMProvider` interface | Planned | — |
@@ -50,7 +53,7 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Browser | Session reuse (`storage_state`, Fernet-encrypted, manual login script) | Built | `app/browser/session_store.py`, `scripts/naukri_login.py` |
 | Apply | Apply-flow inspection tool (button type, optional single click, no submit) | Built | `scripts/inspect_apply_flow.py`, `app/browser/apply_button.py` |
 | Apply | Verify apply selectors on live pages (verified: login marker, company-site + Naukri apply buttons, apply confirmation; not yet: already-applied, chatbot) | In progress | `app/browser/naukri_selectors.py`, `tests/fixtures/naukri/` |
-| Browser | Rate limiting / delays | Planned | — |
+| Browser | Rate limiting / delays | In progress (detail pages: 1 at a time + fixed delay; apply: random pauses; discovery: none) | `app/workflows/task_queues.py`, `worker.py` |
 | Browser | Screenshots / artifacts (MinIO) | Planned | — |
 | Workflows | Temporal `JobDiscoveryWorkflow` (search + save, starts one child per new job) | Built | `app/workflows/`, `scripts/start_discovery.py` |
 | Workflows | Temporal `JobApplicationWorkflow` (filter → semantic score → LLM match → approval → apply with safety rails) | Built | `app/workflows/job_application_workflow.py`, `scripts/start_job_workflow.py` |
@@ -87,7 +90,7 @@ All verified in code unless marked otherwise.
 |---|---|---|---|---|
 | 1 | **Secrets in comments in `server.py`, committed and pushed** | `server.py:21-26`; commit `39612aa` is on `origin/main` | Credentials compromised | Rotate all, delete lines, gitleaks ([10](10-security.md#open-incident-secrets-committed-to-git)) (0) |
 | 2 | ~~`claude-agent-sdk` and `mcp` imported but not declared~~ **Fixed** | Both now in `pyproject.toml` and `uv.lock` | — | Done (0) |
-| 3 | Job description is only the search-card snippet | `app/job_sources/naukri_extractor.py:25` (`.job-desc`); no detail-page code | LLM and embeddings judge on a few lines | Detail-page scraping (1) |
+| 3 | ~~Job description is only the search-card snippet~~ **Fixed** for new jobs | `fetch_job_details` reads the detail page before semantic score + LLM; jobs saved earlier keep the snippet (no backfill) | — | Done (1) |
 | 4 | `main.py` ignores `jobs.status` → rejected jobs reprocessed every run | `get_unmatched_jobs_with_ids` selects all jobs without a match; only the Temporal workflows set `jobs.status` | `main.py` path: filtered-out / below-threshold jobs re-filtered and re-ranked for 14 days | Retire `main.py` pipeline in favour of the workflows (1) |
 | 5 | Blocking embedding and sync Qdrant calls inside async code (`main.py` path; the `semantic_score` activity already uses `asyncio.to_thread`) | `self.ranker.rank(...)` called without `await`/thread in `job_matching_pipeline.py:106`; `Embedder` (fastembed) and `QdrantClient` are sync | Event loop blocked during ranking | `asyncio.to_thread` + `AsyncQdrantClient` (2) |
 | 6 | `job_matches.job_id` unique → single-user only | `app/db/models.py:38`, migration `6fc31f68061a:40` | Can't store matches for a second user or a new prompt version | Composite unique key (6; prompt part in 2) |
@@ -101,6 +104,7 @@ All verified in code unless marked otherwise.
 | 14 | ~~A re-run workflow for an applied job rewrites `jobs.status` and repeats the LLM match~~ **Fixed** | Workflow checks `is_applied_live` first and returns `applied` (patch `skip-if-applied-v1`); `_set_job_status` refuses any status but `applied` for a live-applied job | — | Done (3) |
 | 15 | Daily-cap expiry leaves the `applications` row `pending` | `_apply` sets `jobs.status=expired` via `update_job_status` after `MAX_CAP_WAIT_DAYS`; nothing updates `applications.outcome` | Row says "approved, waiting" forever; harmless for the cap count | Add an `expired` outcome (CHECK change) or close the row in the same commit (3) |
 | 16 | ~~Auto-apply step not implemented~~ **Fixed** | Live apply built in `a095dff`: `NaukriJobApplier` (`app/browser/job_applier.py`) behind `ApplyService` safety rails, `apply_job` activity | — | Done (4) |
+| 17 | Detail pages fail behind a TLS-inspecting firewall | 2026-10-08: Sophos re-signs `*.naukri.com`, Chromium → `ERR_CERT_AUTHORITY_INVALID` (code keeps TLS checks on) | Jobs fall back to the snippet (no failure) | Network/OS: exclude Naukri from inspection or trust the CA (ops) |
 
 ## Tech debt (additional findings)
 
@@ -108,7 +112,6 @@ All verified in code unless marked otherwise.
 |---|---|
 | Candidate name logged (PII) | `main.py:23`, `app/agent/agent.py:29-33` |
 | Full profile incl. name sent to LLM | `job_match_service.py:31` (`model_dump()`) |
-| `DETAIL_PAGE_DELAY_SECONDS` defined but unused | `app/config.py:32` |
 | X API settings left over from MCP experiment | `app/config.py:48-51` |
 | `.env.example` lacks `POSTGRES_*`, which Compose requires | `.env.example`, `docker-compose.yml:6-8` |
 | `.mcp.json` hardcodes an absolute path to `venv/` (the project uses `.venv`) | `.mcp.json` |

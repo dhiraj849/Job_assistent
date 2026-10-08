@@ -146,6 +146,8 @@ flowchart TB
         njs["NaukriJobSource"]
         ext["NaukriExtractor"]
         nb["NaukriBrowser"]
+        ndf["fetch_job_page<br/>(detail page, logged out)"]
+        ndp["parse_job_detail<br/>(JSON-LD → DOM fallback)"]
     end
 
     subgraph llm["app/llm"]
@@ -179,6 +181,7 @@ flowchart TB
     pipe --> disc --> js
     njs -. implements .-> js
     njs --> nb & ext
+    ndf --> nb
     pipe --> filt & ranker & match & score & level & rank
     pipe --> repo --> models --> dbconn
     ranker --> embd & store & texts
@@ -188,7 +191,7 @@ flowchart TB
 
     classDef built fill:#d4edda,stroke:#2e7d32,color:#000
     classDef wip fill:#fff3cd,stroke:#b8860b,color:#000
-    class main,container,config,logcfg,pipe,disc,filt,ranker,match,score,level,rank,prof,js,njs,ext,nb,ccp,embd,store,texts,repo,models,dbconn,dto built
+    class main,container,config,logcfg,pipe,disc,filt,ranker,match,score,level,rank,prof,js,njs,ext,nb,ndf,ndp,ccp,embd,store,texts,repo,models,dbconn,dto built
     class ag wip
 ```
 
@@ -199,7 +202,7 @@ flowchart TB
 | Entry / composition | `main.py`, `app/container.py` | Load settings + profile, wire dependencies, print result | Built |
 | Orchestration | `app/services/job_matching_pipeline.py` | Run the steps in order | Built (to be replaced by Temporal workflows) |
 | Domain services | `app/services/*` | Filtering, scoring, levelling, ranking, prompt building | Built |
-| Sources / browser | `app/job_sources/`, `app/browser/` | Get jobs from Naukri | Built (search cards only) |
+| Sources / browser | `app/job_sources/`, `app/browser/` | Get jobs from Naukri | Built (search cards; detail pages via the `fetch_job_details` activity on the `job-agent-browser` queue) |
 | LLM | `app/llm/` | Call Claude and validate JSON | Built (no abstraction yet) |
 | Retrieval | `app/vector/` | Embeddings + Qdrant | Built |
 | Persistence | `app/db/`, `alembic/` | Tables, repository, migrations | Built |
@@ -222,7 +225,7 @@ flowchart TB
 |---|---|---|
 | Trigger | Manual `python main.py` | Temporal Schedule → `JobDiscoveryWorkflow` |
 | Orchestration | `JobMatchingPipeline.run()` in-process | Temporal workflows + activities |
-| Job detail | Search-card snippet only | Detail page scraped (`details_fetched` state) |
+| Job detail | Workflow path: detail page read after the filter (`jobs.description_full`, `jobs.details`); `main.py` path: snippet unless details were already stored | Same, plus a backfill for older jobs |
 | Job state | Implicit (row in `jobs` / row in `job_matches`) | Explicit lifecycle state machine ([03](03-workflows.md#job-lifecycle-state-machine)) |
 | LLM | `ClaudeCodeProvider` called directly, sequential | `LLMProvider` interface, timeouts, retries, bounded concurrency |
 | Approval | CLI `input()` in prototype | Signal from dashboard/API with timeout |

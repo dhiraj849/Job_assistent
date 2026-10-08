@@ -11,7 +11,7 @@ flowchart LR
     A["Open naukri.com<br/>[Built]"] --> B["Fill keyword + location,<br/>click Search<br/>[Built]"]
     B --> C["Wait for job cards<br/>[Built]"]
     C --> D["Extract each card<br/>[Built]"]
-    D --> E["Open detail page,<br/>extract full JD<br/>[Planned]"]
+    D --> E["Open detail page,<br/>extract full JD<br/>[Built]"]
     E --> F["Apply: open form,<br/>fill, screenshot<br/>[Planned]"]
     F --> G{"dry_run?"}
     G -- yes --> H["Stop before submit<br/>[Planned]"]
@@ -19,8 +19,8 @@ flowchart LR
 
     classDef built fill:#d4edda,stroke:#2e7d32,color:#000
     classDef planned fill:#eeeeee,stroke:#888,stroke-dasharray:5 5,color:#000
-    class A,B,C,D built
-    class E,F,G,H,I planned
+    class A,B,C,D,E built
+    class F,G,H,I planned
 ```
 
 ### Current implementation (Built)
@@ -52,7 +52,34 @@ Selectors live as constants / literals; they will break when Naukri changes its 
 | Experience (optional) | `.exp` | same |
 | Description snippet | `.job-desc` | same |
 | Skill tags | `.tags-gt .tag-li` | same |
-| Detail-page description | **unknown** — `scripts/inspect_job_page.py` saves a detail page's HTML to `/tmp/naukri_job_page.html` to find it | — |
+| Detail-page JD + details | See [Job detail page](#job-detail-page-built) | `app/browser/naukri_selectors.py` |
+
+## Job detail page (Built)
+
+The search card only has a ~90-char snippet. `fetch_job_details` (activity, see
+[03](03-workflows.md)) reads each job's detail page **after the keyword filter** — read only, no
+clicks, **logged out** (public page; keeps this traffic away from the apply account).
+
+| Step | Code | Behaviour |
+|---|---|---|
+| Fetch | `fetch_job_page()` (`app/job_sources/naukri_detail.py`) | New browser, `goto(url, wait_until="domcontentloaded")`, wait for `JOB_DETAIL_READY` (missing → logged, HTML still parsed), return `page.content()`. HTTP ≥ 400 → `DetailPageUnavailable` (retryable). |
+| Parse | `parse_job_detail(html)` (`app/job_sources/naukri_detail_parser.py`) | Pure function, stdlib only. 1) schema.org `JobPosting` JSON-LD → JD + `JobDetails` (skills, salary, experience months, employment type, industry, department, role, education, date posted / valid through). 2) Fallback: text of the element whose class starts with `styles_JDC__dang-inner-html__` (JD only, `source="dom"`). 3) Else `DetailParseError`. A JD under 50 chars counts as missing, so an empty JD is never saved. |
+
+| Selector | Value | Status |
+|---|---|---|
+| `JOB_POSTING_JSON_LD` + `JOB_POSTING_TYPE` | `script[type='application/ld+json']`, `@type == "JobPosting"` | Verified 2026-10-07 (`tests/fixtures/naukri/job_detail_{34,37,39}.html`) |
+| `JOB_DESCRIPTION_CLASS_PREFIX` | `styles_JDC__dang-inner-html__` (CSS-module hash after it changes on deploys) | Verified 2026-10-07 (same fixtures) |
+
+**Headless is blocked:** Naukri answers HTTP 403 "Access Denied" to headless Chromium (seen
+2026-10-07); headed (`BROWSER_HEADLESS=false`, needs a display) gets 200.
+
+**TLS inspection:** on a network whose firewall re-signs HTTPS (seen 2026-10-08: Sophos CA issuing
+`*.naukri.com`), Chromium fails with `ERR_CERT_AUTHORITY_INVALID`. The code does not disable TLS
+checks; the job then continues with the snippet. Fix on the network/OS side.
+
+Fixtures: `uv run python -m scripts.inspect_job_page <job_id>...` opens the pages (headed, delay
+between pages) and writes trimmed fixtures (JSON-LD + JD section, ~9 KB instead of ~260 KB) to
+`tests/fixtures/naukri/job_detail_<id>.html`, printing what the parser found.
 
 ### Apply-flow selectors (Built)
 
@@ -118,9 +145,9 @@ markup. Without `--click` nothing is clicked.
 
 | Rule | Status |
 |---|---|
-| One browser session against Naukri at a time (worker concurrency for browser activities = 1) | Planned |
+| One detail page at a time: `fetch_job_details` runs on its own task queue `job-agent-browser` (`max_concurrent_activities=1`) | Built (`app/workflows/task_queues.py`, `worker.py`); discovery and apply still run on the main queue |
 | Random 1–3 s pause between apply actions, per-key typing delay (80–200 ms) | Built (`job_applier.py`, `apply_page.py`) |
-| Random delay between detail pages: `DETAIL_PAGE_DELAY_SECONDS` (3.0) ± jitter | **In progress** — setting exists in `app/config.py:32`, not used anywhere |
+| Fixed delay before each detail page: `DETAIL_PAGE_DELAY_SECONDS` (3.0) | Built (`fetch_job_details`); jitter Planned |
 | Max applications per day (`MAX_APPLIES_PER_DAY`, IST day) | Built ([03](03-workflows.md#apply-safety-rails-built)) |
 | Max detail pages per run (e.g. 30) | Planned |
 | Back off for hours on HTTP 429 / challenge pages; no retries against a CAPTCHA | Planned |

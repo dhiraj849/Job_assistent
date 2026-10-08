@@ -1,7 +1,7 @@
 # ADR-004 — Use Qdrant for vector search instead of pgvector
 
 - **Status:** Accepted
-- **Implementation:** Built (`app/vector/job_vector_store.py`, collection `jobs_bge_small_v1`)
+- **Implementation:** Built (`app/vector/job_vector_store.py`, collection `jobs_bge_small_v2` since the full-JD change; see [07](../07-matching-and-retrieval.md))
 - **Date:** 2026-09-24
 
 ## Context

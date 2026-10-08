@@ -55,14 +55,16 @@ matches "inte**rest**".
 | Embedding model | `BAAI/bge-small-en-v1.5` via fastembed (ONNX, CPU) | `app/vector/embedder.py:3` |
 | Dimensions | 384 | `app/vector/job_vector_store.py:15` |
 | Distance | Cosine | `job_vector_store.py:30` |
-| Collection | `jobs_bge_small_v1` — **one collection per embedding model version** | `job_vector_store.py:14` |
+| Collection | `jobs_bge_small_v2` — **one collection per embedding model + embedded-text version** (v1: card snippet; v2: full JD when fetched). v1 is left in Qdrant for rollback | `job_vector_store.py` (`COLLECTION`) |
 | Point ID | `jobs.id` from Postgres | `job_ranker.py:65` |
 | Payload | title, company, location | `job_ranker.py:68` |
 | Threshold | `MIN_SCORE = 0.7` | `job_ranker.py:10` |
 
 Texts (`app/vector/texts.py`):
 
-- Job: `title` + `"Skills: a, b, c"` + description truncated to 1500 chars.
+- Job: `title` + `"Skills: a, b, c"` + description truncated to 1500 chars. In the application
+  workflow the description is the **full JD** (`fetch_job_details` runs before `semantic_score`,
+  [03](03-workflows.md)); jobs without details fall back to the ~90-char card snippet.
 - Profile: `"{experience_years} years of experience. Skills: {skills}."` — no target role, no education.
 
 Steps:
@@ -84,8 +86,12 @@ Known limitations:
 - The 0.7 threshold is unvalidated. `scripts/search_jobs.py` uses 0.07, which suggests the value was
   being explored. Tune on the golden set ([05](05-agent-design.md#evals)).
 - The Qdrant score is logged but not stored. Planned: `job_matches.semantic_score`.
-- Vectors are never updated when a job's text changes (e.g. after detail-page scraping). Planned:
-  re-embed on `details_fetched`.
+- Vectors are never updated when a job's text changes. New jobs are fine (details are fetched before
+  their first embedding); the jobs embedded in v1 got no backfill. If a job's details are fetched
+  after it was embedded in v2, its vector stays on the snippet.
+- Full-JD texts score a bit higher than snippets (measured 2026-10-07 on 3 jobs: +0.01 to +0.06,
+  e.g. 0.709 → 0.771), so more jobs may pass `MIN_SCORE` 0.7. Watch the shortlisted rate before
+  tuning.
 
 ## Stage 3 — LLM evaluation
 

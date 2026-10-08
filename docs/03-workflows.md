@@ -51,7 +51,7 @@ sequenceDiagram
 | `discover_jobs(keyword, location) -> list[Job]` | `activities.py` | Wraps `NaukriJobSource.get_jobs`. start-to-close **3 min**. |
 | `save_jobs(jobs) -> list[int]` | `activities.py` | Own `SessionLocal` session; `JobRepository.save_jobs(source="naukri")` + `get_ids_by_urls`; returns the ids of the new jobs. start-to-close **30 s**. |
 | Client | `client.py` | `connect_client()` — the only way to connect; always uses `pydantic_data_converter`. |
-| Worker | `worker.py` | Registers both workflows + all activities on `TEMPORAL_TASK_QUEUE`, `max_concurrent_activities=3` (caps parallel LLM / browser work); logs `worker_started` with `apply_mode` and `max_applies_per_day`, so the log shows which safety rails the running worker uses. |
+| Worker | `worker.py` | Registers both workflows + all activities on `TEMPORAL_TASK_QUEUE`, `max_concurrent_activities=3` (caps parallel LLM / browser work). A second `Worker` in the same process serves `fetch_job_details` on `BROWSER_TASK_QUEUE` (`job-agent-browser`, `app/workflows/task_queues.py`) with `max_concurrent_activities=1`: one detail page at a time, and waiting tasks stay on the server instead of holding a main-queue slot. Logs `worker_started` with `apply_mode`, `max_applies_per_day`, `browser_task_queue` and `detail_page_delay_seconds`, so the log shows which safety rails the running worker uses. |
 | Starter | `scripts/start_discovery.py` | Starts the workflow with ID `discovery-{keyword}-{location}` (slugified), waits, prints the result. |
 
 - **Retry policy** (all activities, `app/workflows/retry.py`): max 3 attempts, initial interval 10 s, backoff 2.0.
@@ -102,6 +102,7 @@ yet verified ([06](06-browser-automation.md#live-apply-built-chatbot-selectors-n
 | `is_applied_live(job_id)` | `JobRepository.is_applied_live` (reads `applications`) | 30 s | `bool` |
 | `load_job(job_id)` | `JobRepository.get_job` | 30 s | `Job` |
 | `filter_job(job)` | `JobFilterService.filter_jobs` | 30 s | `bool` |
+| `fetch_job_details(job_id)` | `fetch_job_page` + `parse_job_detail` + `JobRepository.save_details` ([06](06-browser-automation.md#job-detail-page-built)); runs on `job-agent-browser`; sleeps `DETAIL_PAGE_DELAY_SECONDS` first; skips the request if `details` is already stored | 2 min start-to-close, **30 min schedule-to-close** (queue wait + all attempts) | `Job` with the full JD; parse failure → non-retryable `DetailParseError` |
 | `semantic_score(job_id, job)` | `JobRanker.rank(..., limit=1)` (run in a thread; embedder cached per worker) | 1 min | `float`, or `None` below `MIN_SCORE` 0.7 |
 | `match_job(job)` | `JobMatchService` + `JobScoreService` + `JobMatchLevelService` | 2 min | `JobMatchItem` |
 | `save_match(job_id, item)` | `JobRepository.save_match` (upsert) | 30 s | — |
@@ -132,7 +133,12 @@ All except `apply_job` use the shared retry policy (max 3 attempts). `apply_job`
   in `job_decisions`, never in `applications` (a row there means "approved").
 - **Run id:** `record_approval` / `record_decision` read `activity.info().workflow_run_id` and store
   it as the `job_decisions` idempotency key, so a retried activity logs the decision once.
-- If an activity gives up after its retries, the workflow sets `failed` and then fails (visible in the UI).
+- **Full JD before scoring.** After `filter_job` (which reads only title + skills, so filtered-out
+  jobs cost no page request) the workflow runs `fetch_job_details` and passes the returned `Job` to
+  `semantic_score` and `match_job`. If it fails (parse error, 3 failed attempts, or the 30-min
+  deadline, e.g. no browser worker), the workflow logs a warning and **continues with the card
+  snippet**; the job is not failed and `jobs.details_fetched_at` stays NULL.
+- If any other activity gives up after its retries, the workflow sets `failed` and then fails (visible in the UI).
 - **Scripts:** `scripts/list_pending.py` (jobs in `awaiting_approval` with LLM score + level, then
   `needs_manual` / `failed` jobs with their reason), `scripts/mark_applied.py <job_id> --reason`
   (records an apply done by hand),
@@ -143,8 +149,13 @@ All except `apply_job` use the shared retry policy (max 3 attempts). `apply_job`
   3 days, `record_approval` gets the note and decision time (and is not called on reject),
   `record_decision` gets the rejection note/time and the timeout time, an already-applied job never
   reaches `load_job` / `match_job`, and replay of the pre-`apply-job-v1`, pre-`record-approval-v1`,
-  pre-`record-decision-v1` and current histories, plus a real one (`record_approval_v1.json`, job-38
-  from the local server) (time-skipping server, fake activities).
+  pre-`record-decision-v1` and current histories, plus real ones (`record_approval_v1.json`, job-38;
+  `awaiting_approval_v1.json`, job-37 waiting for approval before `fetch-details-v1`) from the local
+  server; the full JD reaches `semantic_score` and `match_job`, a broken detail page falls back to
+  the snippet, a filtered-out job reads no page, and `fetch_job_details` is scheduled on the browser
+  queue with the 30-min deadline (time-skipping server, fake activities). Activity:
+  `tests/workflows/test_fetch_job_details_activity.py` (fixture page, skip if fetched, non-retryable
+  parse error).
 
 ```mermaid
 stateDiagram-v2
@@ -235,6 +246,9 @@ The switch from `apply_job_dry_run` to `apply_job` is guarded by `workflow.patch
 - `workflow.patched("record-decision-v1")` guards `update_job_status(REJECTED/EXPIRED)` →
   `record_decision`; `rejected_v1.json` / `expired_v1.json` (recorded with the code before it) replay
   in a test.
+- `workflow.patched("fetch-details-v1")` guards the `fetch_job_details` step between `filter_job`
+  and `semantic_score`. Workflows already past that point (the ones waiting for approval when it
+  shipped) replay without it; `awaiting_approval_v1.json` replays in a test.
 - Removal (later): once no pre-patch workflow is open, replace `patched()` with
   `workflow.deprecate_patch("apply-job-v1")` and delete the old branch; after those workflows are
   gone too, remove the call and stop registering `apply_job_dry_run`.
@@ -257,7 +271,7 @@ Use `WorkflowIDReusePolicy.REJECT_DUPLICATE` so a finished job is never re-appli
 |---|---|---|---|---|
 | `search_jobs(keyword, location)` | Discovery | `NaukriJobSource.get_jobs` | 3 attempts, backoff 30 s → 5 min | Heartbeat per page. |
 | `persist_jobs(jobs)` | Discovery | `JobRepository.save_jobs` | default | Idempotent (URL unique). |
-| `fetch_job_details(job_id)` | Discovery | — (planned) | 3 attempts | Rate-limited; sets `details_fetched`. |
+| `fetch_job_details(job_id)` | Application (after filter) | Built: `activities.fetch_job_details` | 3 attempts, 30 min deadline | One at a time on `job-agent-browser`; sets `details_fetched_at`. |
 | `filter_jobs(job_ids)` | Discovery | `JobFilterService.filter_jobs` | default | Sets `filtered_out` / `shortlisted`. Profile-driven keywords. |
 | `rank_jobs(job_ids, limit)` | Discovery | `JobRanker.rank` | default | Runs embedding in a thread. |
 | `match_job(job_id)` | Discovery | `JobMatchService.match` + score + level + `save_match` | 3 attempts, start-to-close 120 s | LLM call; validated JSON; sets `matched`. |
