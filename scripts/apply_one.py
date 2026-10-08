@@ -3,8 +3,8 @@
 Runs the same ApplyService as the workflow (lock, idempotency, daily cap,
 answers.yaml), but always in live mode and without Temporal. Only jobs
 with a recorded approval (an applications row, written by the workflow's
-decide signal) can be applied to; pending, failed and needs_manual can be
-(re)tried. A headed browser opens; artifacts go to
+decide signal) can be applied to; pending, failed, needs_manual and expired
+can be (re)tried. A headed browser opens; artifacts go to
 artifacts/apply/<job_id>/.
 
 First live run, capped at one apply today:
@@ -57,6 +57,9 @@ async def main(job_id: int) -> int:
             return 1
         if application.outcome == ApplicationOutcome.FAILED:
             print(f"Note: a previous attempt FAILED ({application.reason}). Check artifacts/apply/ first.")
+        if application.outcome == ApplicationOutcome.EXPIRED:
+            # The workflow gave up on the cap; the y/N below is the fresh approval.
+            print(f"Note: this approval EXPIRED ({application.reason}). Is the job still worth it?")
 
         answer = input("Apply LIVE to this job on Naukri? [y/N] ").strip().lower()
         if answer != "y":

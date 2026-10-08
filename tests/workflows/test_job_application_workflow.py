@@ -26,6 +26,7 @@ from app.models.job_match_item import JobMatchItem
 from app.models.job_status import JobStatus
 from app.workflows.job_application_workflow import (
     APPROVAL_TIMEOUT,
+    CAP_EXPIRED_REASON,
     DETAILS_DEADLINE,
     JobApplicationWorkflow,
 )
@@ -134,8 +135,14 @@ def make_activities(
         applied.append(job_id)
         return apply_results[min(len(applied), len(apply_results)) - 1]
 
+    # expire_approval also sets jobs.status=expired.
+    @activity.defn(name="expire_approval")
+    async def expire_approval(job_id: int, reason: str) -> None:
+        statuses.append(JobStatus.EXPIRED.value)
+
     return [is_applied_live, load_job, filter_job, semantic_score, match_job,
-            save_match, update_job_status, record_approval, record_decision, apply_job]
+            save_match, update_job_status, record_approval, record_decision, apply_job,
+            expire_approval]
 
 
 def make_browser_activities(details: str, calls: list[str]):
@@ -525,3 +532,43 @@ def test_real_in_flight_history_replays_without_details():
     )
     asyncio.run(replayer().replay_workflow(history))
     assert "fetch_job_details" not in history.to_json()
+
+
+# --- Cap expiry (patch "cap-expiry-outcome-v1", known issue #15) -------------
+
+
+def test_cap_expiry_expires_the_application():
+    _, _, _, history = asyncio.run(
+        run_workflow("strong", decision=True, apply_results=[CAP_FULL])
+    )
+
+    # applications + jobs.status in one activity, with a reason for apply_one.
+    assert _scheduled_inputs(history, "expire_approval") == [[JOB_ID, CAP_EXPIRED_REASON]]
+    # The old status-only write is gone on the new path.
+    assert [s for _, s in _scheduled_inputs(history, "update_job_status")] == PRE_APPROVAL
+    asyncio.run(replayer().replay_workflow(history))
+
+
+# cap_expired_v1.json was recorded with the code from BEFORE
+# "cap-expiry-outcome-v1": after 4 capped apply_job calls it ends with
+# update_job_status(EXPIRED). A workflow sleeping on the cap when the patch
+# shipped must finish on that old path.
+
+
+def test_pre_cap_expiry_patch_history_replays_on_old_path():
+    history = WorkflowHistory.from_json(
+        "cap_expired_v1", (HISTORIES / "cap_expired_v1.json").read_text()
+    )
+    asyncio.run(replayer().replay_workflow(history))
+    assert "expire_approval" not in history.to_json()
+    assert [s for _, s in _scheduled_inputs(history, "update_job_status")][-1] == "expired"
+
+
+def test_every_saved_history_replays():
+    # Safety net: a new patch must not break ANY history kept in histories/,
+    # including ones added later without their own test.
+    files = sorted(HISTORIES.glob("*.json"))
+    assert len(files) >= 7
+    for path in files:
+        history = WorkflowHistory.from_json(path.stem, path.read_text())
+        asyncio.run(replayer().replay_workflow(history))

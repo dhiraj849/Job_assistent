@@ -328,3 +328,114 @@ def test_check_constraint_rejects_unknown_decision():
         await session.rollback()
 
     run_in_rollback(test)
+
+
+# --- expire_approval (daily cap stayed full, known issue #15) -------------
+
+CAP_REASON = "daily cap full on 4 days in a row; never tried"
+
+
+def test_pending_approval_expires_with_reason_and_status_in_one_commit(monkeypatch):
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_approval(job_id, APPROVED_AT, "", run_id())
+
+        commits = []
+        real_commit = session.commit
+
+        async def counting_commit():
+            commits.append(1)
+            await real_commit()
+
+        monkeypatch.setattr(session, "commit", counting_commit)
+        assert await repo.expire_approval(job_id, CAP_REASON)
+
+        assert len(commits) == 1
+        application = await repo.get_application(job_id)
+        assert application.outcome == ApplicationOutcome.EXPIRED
+        assert application.reason == CAP_REASON
+        assert application.applied_at is None
+        assert await job_status(session, job_id) == "expired"
+
+    run_in_rollback(test)
+
+
+def test_expire_rolls_back_both_when_status_write_fails(monkeypatch):
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_approval(job_id, APPROVED_AT, "", run_id())
+
+        async def broken_status_write(job_id, status):
+            raise RuntimeError("jobs update failed")
+
+        monkeypatch.setattr(repo, "_set_job_status", broken_status_write)
+        with pytest.raises(RuntimeError):
+            await repo.expire_approval(job_id, CAP_REASON)
+        await session.rollback()  # what closing the activity's session does
+
+        assert (await repo.get_application(job_id)).outcome == ApplicationOutcome.PENDING
+        assert await job_status(session, job_id) == "approved"
+
+    run_in_rollback(test)
+
+
+def test_expire_never_touches_a_live_applied_row():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_manual_apply(job_id, "by hand")
+
+        assert not await repo.expire_approval(job_id, CAP_REASON)
+        application = await repo.get_application(job_id)
+        assert application.applied_live
+        assert application.reason == "by hand"
+        assert await job_status(session, job_id) == "applied"
+
+    run_in_rollback(test)
+
+
+def test_expire_leaves_a_failed_row_untouched():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_approval(job_id, APPROVED_AT, "", run_id())
+        await repo.save_apply_result(
+            job_id, ApplicationOutcome.FAILED, JobStatus.FAILED, "boom", False, None
+        )
+
+        assert not await repo.expire_approval(job_id, CAP_REASON)
+        application = await repo.get_application(job_id)
+        assert application.outcome == ApplicationOutcome.FAILED
+        assert application.reason == "boom"
+        assert await job_status(session, job_id) == "failed"
+
+    run_in_rollback(test)
+
+
+def test_expired_approval_can_be_approved_again():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_approval(job_id, APPROVED_AT, "", run_id())
+        await repo.expire_approval(job_id, CAP_REASON)
+
+        # A later "yes" (new workflow run) starts over from pending.
+        assert await repo.record_approval(job_id, APPROVED_AT + timedelta(days=5), "again", run_id())
+        application = await repo.get_application(job_id)
+        assert application.outcome == ApplicationOutcome.PENDING
+        assert application.reason == ""
+        assert await job_status(session, job_id) == "approved"
+
+    run_in_rollback(test)
+
+
+def test_daily_cap_does_not_count_expired_rows():
+    async def test(repo: JobRepository, session):
+        before = await repo.count_applied_since(False, APPROVED_AT)
+        before_dry = await repo.count_applied_since(True, APPROVED_AT)
+
+        job_id = await new_job(session)
+        await repo.record_approval(job_id, APPROVED_AT, "", run_id())
+        await repo.expire_approval(job_id, CAP_REASON)
+
+        assert await repo.count_applied_since(False, APPROVED_AT) == before
+        assert await repo.count_applied_since(True, APPROVED_AT) == before_dry
+
+    run_in_rollback(test)

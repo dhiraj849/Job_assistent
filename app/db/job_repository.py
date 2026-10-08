@@ -422,6 +422,34 @@ class JobRepository:
 
         logger.info("apply_result_saved", job_id=job_id, outcome=outcome.value, dry_run=dry_run)
 
+    async def expire_approval(self, job_id: int, reason: str) -> bool:
+        """Mark an approval that was never tried (daily cap stayed full) as
+        expired, plus jobs.status=expired, in one commit.
+
+        Only a pending row changes: applied, failed or needs_manual already
+        say what happened and must not be overwritten. Returns False (and
+        leaves jobs.status alone) if the row was not pending.
+        """
+        stmt = (
+            update(ApplicationRecord)
+            .where(ApplicationRecord.job_id == job_id)
+            .where(ApplicationRecord.outcome == ApplicationOutcome.PENDING.value)
+            .values(
+                outcome=ApplicationOutcome.EXPIRED.value,
+                reason=reason,
+                updated_at=func.clock_timestamp(),
+            )
+            .returning(ApplicationRecord.id)
+        )
+        written = await self.session.scalar(stmt) is not None
+
+        if written:
+            await self._set_job_status(job_id, JobStatus.EXPIRED)
+        await self.session.commit()
+
+        logger.info("approval_expired", job_id=job_id, written=written)
+        return written
+
     async def record_manual_apply(self, job_id: int, reason: str) -> bool:
         """Record an apply I did by hand (outside ApplyService). False if
         the job is already recorded as applied live.

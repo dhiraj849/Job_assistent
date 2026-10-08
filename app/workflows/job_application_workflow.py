@@ -17,6 +17,7 @@ with workflow.unsafe.imports_passed_through():
     from app.workflows.activities import (
         apply_job,
         apply_job_dry_run,
+        expire_approval,
         fetch_job_details,
         filter_job,
         is_applied_live,
@@ -51,10 +52,14 @@ SKIP_APPLIED_PATCH = "skip-if-applied-v1"
 DECISION_PATCH = "record-decision-v1"
 # Version marker for the fetch_job_details step between filter and semantic score.
 DETAILS_PATCH = "fetch-details-v1"
+# Version marker for update_job_status(EXPIRED) -> expire_approval after the cap wait.
+CAP_EXPIRY_PATCH = "cap-expiry-outcome-v1"
 
 # If the daily cap is full, try again on this many following days, then give up:
 # an approval older than that is probably stale.
 MAX_CAP_WAIT_DAYS = 3
+# Stored in applications.reason, so `apply_one` / lists show why it never ran.
+CAP_EXPIRED_REASON = f"daily cap full on {MAX_CAP_WAIT_DAYS + 1} days in a row; never tried"
 
 # Only these LLM levels are worth a human's time; "weak" ends as filtered_out.
 APPROVAL_LEVELS = {"strong", "potential"}
@@ -212,7 +217,20 @@ class JobApplicationWorkflow:
                 workflow.logger.info("daily cap reached, retrying in %ss", result.retry_after_seconds)
                 await workflow.sleep(timedelta(seconds=result.retry_after_seconds))
 
-        return await self._set_status(job_id, JobStatus.EXPIRED)
+        # New path: applications pending -> expired together with jobs.status,
+        # so the row no longer looks queued (known issue #15). Histories that
+        # already ran update_job_status(EXPIRED) replay the old path.
+        if not workflow.patched(CAP_EXPIRY_PATCH):
+            return await self._set_status(job_id, JobStatus.EXPIRED)
+
+        await workflow.execute_activity(
+            expire_approval,
+            args=[job_id, CAP_EXPIRED_REASON],
+            start_to_close_timeout=DB_TIMEOUT,
+            retry_policy=RETRY_POLICY,
+        )
+        self._status = JobStatus.EXPIRED
+        return self._status.value
 
     async def _fetch_details(self, job_id: int, job: Job) -> Job:
         try:

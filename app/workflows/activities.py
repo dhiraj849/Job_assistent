@@ -225,6 +225,17 @@ async def record_decision(job_id: int, decision: Decision, decided_at: datetime,
 
 
 @activity.defn
+async def expire_approval(job_id: int, reason: str) -> None:
+    """Approved but never tried (daily cap stayed full): applications
+    pending -> expired + jobs.status=expired, one commit.
+
+    Idempotent: a retry finds the row no longer pending and changes nothing.
+    """
+    async with SessionLocal() as session:
+        await JobRepository(session).expire_approval(job_id, reason)
+
+
+@activity.defn
 async def apply_job(job_id: int) -> ApplyResult:
     """Apply to an approved job behind the safety rails (see ApplyService).
 

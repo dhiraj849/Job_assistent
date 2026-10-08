@@ -12,6 +12,10 @@ class ApplicationOutcome(StrEnum):
     APPLIED = "applied"
     NEEDS_MANUAL = "needs_manual"
     FAILED = "failed"
+    # Approved, but the daily cap stayed full for MAX_CAP_WAIT_DAYS: never
+    # tried. Not "pending" any more (no workflow will apply it), so lists
+    # and stats do not mistake it for a job still in the queue.
+    EXPIRED = "expired"
 
 
 class Application(BaseModel):

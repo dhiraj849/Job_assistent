@@ -43,6 +43,7 @@ async def main() -> None:
             activities.record_approval,
             activities.record_decision,
             activities.apply_job,
+            activities.expire_approval,
             activities.apply_job_dry_run,  # old histories (pre "apply-job-v1")
         ],
         # Many application workflows can start at once; cap parallel
