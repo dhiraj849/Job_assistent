@@ -8,7 +8,8 @@ holds derived vectors keyed by `jobs.id` and can be rebuilt from Postgres
 
 Defined in `app/db/models.py`, created by migrations `e38fb9a63e38` (jobs), `6fc31f68061a` (job_matches) and
 `b5d33dd745b3` (`jobs.status`, `jobs.status_updated_at`), `f734e9e72583` (applications),
-`7a754c37777b` (job_decisions) and `b50143f8cf9c` (`jobs.description_full`, `details`, `details_fetched_at`).
+`7a754c37777b` (job_decisions), `b50143f8cf9c` (`jobs.description_full`, `details`, `details_fetched_at`)
+and `a7664589ce5e` (`expired` added to `ck_applications_outcome`).
 
 ```mermaid
 erDiagram
@@ -51,7 +52,7 @@ erDiagram
     applications {
         int id PK
         int job_id FK, UK "jobs.id, unique: one application per job"
-        varchar_20 outcome "pending | applied | needs_manual | failed (CHECK)"
+        varchar_20 outcome "pending | applied | needs_manual | failed | expired (CHECK)"
         text reason "default '', required for needs_manual / failed"
         boolean dry_run "default false"
         timestamptz approved_at "NOT NULL: a row exists only after approval"
@@ -96,7 +97,9 @@ Notes on current behaviour:
   (e.g. `approved`) before every apply, so `jobs.status` cannot prove a job was never applied.
   - Written only through `JobRepository`: `record_approval` (row `pending` + `job_decisions` row +
     `jobs.status=approved`),
-    `save_apply_result` (final outcome + `jobs.status`), `record_manual_apply`
+    `save_apply_result` (final outcome + `jobs.status`), `expire_approval` (`pending` → `expired` +
+    reason + `jobs.status=expired` when the daily cap stayed full; only a `pending` row changes),
+    `record_manual_apply`
     (`scripts/mark_applied.py`) and `insert_application_if_missing` (`scripts/backfill_applications.py`).
     Each writes `applications` and `jobs` in **one commit**: both change or neither does.
   - Every write has the guard `NOT (outcome = 'applied' AND NOT dry_run)`: a row applied live is never
@@ -153,7 +156,7 @@ Notes on current behaviour:
 
 | Constraint | Rule | Why |
 |---|---|---|
-| `ck_applications_outcome` | `outcome IN ('pending','applied','needs_manual','failed')` | No typo values in the audit table (unlike the flexible `jobs.status`); a new value needs a migration. |
+| `ck_applications_outcome` | `outcome IN ('pending','applied','needs_manual','failed','expired')` (`expired` since `a7664589ce5e`; its downgrade maps `expired` → `pending` first) | No typo values in the audit table (unlike the flexible `jobs.status`); a new value needs a migration. |
 | `ck_applications_applied_at` | `(outcome = 'applied') = (applied_at IS NOT NULL)` | `applied_at` exactly when applied. |
 | `ck_applications_reason` | `outcome NOT IN ('needs_manual','failed') OR reason <> ''` | A human must see what to do next. |
 | `ck_applications_applied_after_approval` | `applied_at >= approved_at` | Never applied before approval (passes while `applied_at` is NULL). |

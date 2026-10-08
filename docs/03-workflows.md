@@ -110,6 +110,7 @@ yet verified ([06](06-browser-automation.md#live-apply-built-chatbot-selectors-n
 | `record_approval(job_id, approved_at, note)` | `JobRepository.record_approval`: `applications` row `pending` + `job_decisions` row `approved` + `jobs.status=approved`, one commit; leaves a job applied live untouched | 30 s | — |
 | `record_decision(job_id, decision, decided_at, note)` | `JobRepository.record_decision`: `job_decisions` row (`rejected` / `expired`) + `jobs.status`, one commit | 30 s | — |
 | `apply_job(job_id)` | `ApplyService` (`app/services/apply_service.py`) | 5 min | `ApplyResult` |
+| `expire_approval(job_id, reason)` | `JobRepository.expire_approval`: `applications` `pending` → `expired` + reason + `jobs.status=expired`, one commit; any other outcome is left untouched | 30 s | — |
 | `apply_job_dry_run(job_id)` | `JobRepository.get_job`, logs `apply_dry_run` | 30 s | message — **old histories only** (pre-patch), still registered on the worker |
 
 All except `apply_job` use the shared retry policy (max 3 attempts). `apply_job` uses
@@ -146,7 +147,7 @@ All except `apply_job` use the shared retry policy (max 3 attempts). `apply_job`
   `scripts/start_job_workflow.py <job_id>` (for jobs saved before workflows existed).
 - **Tests:** `tests/workflows/test_job_application_workflow.py` — approved, rejected,
   3-day timeout → expired, weak → filtered_out, needs_manual, cap wait + retry, cap → expired after
-  3 days, `record_approval` gets the note and decision time (and is not called on reject),
+  3 days (via `expire_approval`, no `update_job_status(expired)`), every file in `histories/` replays, `record_approval` gets the note and decision time (and is not called on reject),
   `record_decision` gets the rejection note/time and the timeout time, an already-applied job never
   reaches `load_job` / `match_job`, and replay of the pre-`apply-job-v1`, pre-`record-approval-v1`,
   pre-`record-decision-v1` and current histories, plus real ones (`record_approval_v1.json`, job-38;
@@ -175,7 +176,7 @@ stateDiagram-v2
     approved --> needs_manual: company site / unknown question
     approved --> failed: bad answers.yaml / browser error
     approved --> approved: daily cap full, sleep until next IST day
-    approved --> expired: cap still full after 3 more days
+    approved --> expired: cap still full after 3 more days + expire_approval
     shortlisted --> failed: activity retries exhausted
     filtered_out --> [*]
     rejected --> [*]
@@ -220,7 +221,11 @@ mirrors the status for the query. Settings are read only inside the activity, ne
 changed env var cannot change what a replayed workflow does.
 
 On `skipped_cap` the workflow `workflow.sleep()`s for `retry_after_seconds` (a durable timer) and
-tries again, up to `MAX_CAP_WAIT_DAYS` = 3 more days, then sets `expired`.
+tries again, up to `MAX_CAP_WAIT_DAYS` = 3 more days, then runs `expire_approval`: the
+`applications` row goes `pending` → `expired` (reason `CAP_EXPIRED_REASON`) together with
+`jobs.status=expired`, so it no longer looks queued. Retry by hand with `scripts/apply_one.py`
+(it prints a note for an expired row; its y/N confirmation is the fresh approval), or approve again
+in a new workflow run (`record_approval` resets the row to `pending`).
 
 ### Versioning with `workflow.patched` (Built)
 
@@ -249,6 +254,11 @@ The switch from `apply_job_dry_run` to `apply_job` is guarded by `workflow.patch
 - `workflow.patched("fetch-details-v1")` guards the `fetch_job_details` step between `filter_job`
   and `semantic_score`. Workflows already past that point (the ones waiting for approval when it
   shipped) replay without it; `awaiting_approval_v1.json` replays in a test.
+- `workflow.patched("cap-expiry-outcome-v1")` guards `update_job_status(EXPIRED)` → `expire_approval`
+  at the end of `_apply`. Workflows sleeping on the cap when it shipped finish on the old path;
+  `cap_expired_v1.json` (recorded with the code before it) replays in a test.
+- `test_every_saved_history_replays` globs `tests/workflows/histories/*.json` and replays each one,
+  so a new patch cannot break any saved history.
 - Removal (later): once no pre-patch workflow is open, replace `patched()` with
   `workflow.deprecate_patch("apply-job-v1")` and delete the old branch; after those workflows are
   gone too, remove the call and stop registering `apply_job_dry_run`.
@@ -359,6 +369,7 @@ stateDiagram-v2
 | `awaiting_approval` | Application workflow waiting for signal | `jobs.status` | Yes |
 | `approved` | Human said yes | `jobs.status` + `applications` row `pending` (time + note) | Yes |
 | `rejected` / `expired` | Human said no, or 3-day timeout | `jobs.status` + `job_decisions` row (note + time) | Yes |
+| `expired` (after approval) | Daily cap full on 4 days in a row; never tried | `jobs.status` + `applications` `expired` (reason) | Yes |
 | `applied_dry_run` | Dry-run apply logged | `jobs.status` + `applications` `applied`, `dry_run=true` | Yes |
 | `applied` | Applied for real (or Naukri already showed "Applied", or `mark_applied`) | `jobs.status` + `applications` `applied` | Yes |
 | `needs_manual` | Approved, but a human must finish it (company site, unknown question) | `jobs.status` + `applications` (reason) | Yes |
