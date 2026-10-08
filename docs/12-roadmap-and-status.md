@@ -11,7 +11,7 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Discovery | Naukri search (first results page) via Playwright | Built | `app/job_sources/naukri.py`, `app/browser/naukri_browser.py` |
 | Discovery | Card extraction (title, company, location, exp, snippet, skills, URL) | Built | `app/job_sources/naukri_extractor.py` |
 | Discovery | Pagination | Planned | — |
-| Discovery | Detail-page scraping (full JD + details: JSON-LD, DOM fallback; one page at a time on `job-agent-browser`, `DETAIL_PAGE_DELAY_SECONDS`; patch `fetch-details-v1`) | Built (live fetch verified 2026-10-07 on 3 jobs) | `app/job_sources/naukri_detail.py`, `naukri_detail_parser.py`, `activities.fetch_job_details`, migration `b50143f8cf9c`, `tests/job_sources/` |
+| Discovery | Detail-page scraping (full JD + details: JSON-LD, DOM fallback; one page at a time on `job-agent-browser`, `DETAIL_PAGE_DELAY_SECONDS`; patch `fetch-details-v1`) | Built (live fetch via worker verified 2026-10-08: 4/4 new jobs, no snippet fallback) | `app/job_sources/naukri_detail.py`, `naukri_detail_parser.py`, `activities.fetch_job_details`, migration `b50143f8cf9c`, `tests/job_sources/` |
 | Discovery | Backfill details for jobs saved before detail fetching | Planned | — |
 | Discovery | Random jitter on the detail-page delay | Planned | — |
 | Discovery | Scheduled runs | Planned | — |
@@ -25,7 +25,7 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Matching | Profile-driven filter keywords / role focus | Planned | — |
 | Retrieval | fastembed bge-small embeddings | Built | `app/vector/embedder.py` |
 | Retrieval | Qdrant collection per model + text version (`jobs_bge_small_v2`: full JD), lazy sync, ID-filtered search | Built | `app/vector/job_vector_store.py`, `app/services/job_ranker.py` |
-| Retrieval | Re-tune `MIN_SCORE` 0.7 for full-JD texts (scores rise +0.01–0.06) | Planned | `docs/07` |
+| Retrieval | Re-tune `MIN_SCORE` 0.7 for full-JD texts (scores rise +0.02–0.10, 5 jobs paired on 2026-10-08; keep 0.7 until ~30 full-JD jobs) | Planned | `docs/07` |
 | Retrieval | Full re-sync script | Built | `scripts/sync_jobs_to_qdrant.py` |
 | LLM | Claude structured-output evaluation | Built | `app/llm/claude_code.py`, `app/services/job_match_service.py` |
 | LLM | `LLMProvider` interface | Planned | — |
@@ -104,7 +104,7 @@ All verified in code unless marked otherwise.
 | 14 | ~~A re-run workflow for an applied job rewrites `jobs.status` and repeats the LLM match~~ **Fixed** | Workflow checks `is_applied_live` first and returns `applied` (patch `skip-if-applied-v1`); `_set_job_status` refuses any status but `applied` for a live-applied job | — | Done (3) |
 | 15 | Daily-cap expiry leaves the `applications` row `pending` | `_apply` sets `jobs.status=expired` via `update_job_status` after `MAX_CAP_WAIT_DAYS`; nothing updates `applications.outcome` | Row says "approved, waiting" forever; harmless for the cap count | Add an `expired` outcome (CHECK change) or close the row in the same commit (3) |
 | 16 | ~~Auto-apply step not implemented~~ **Fixed** | Live apply built in `a095dff`: `NaukriJobApplier` (`app/browser/job_applier.py`) behind `ApplyService` safety rails, `apply_job` activity | — | Done (4) |
-| 17 | Detail pages fail behind a TLS-inspecting firewall | 2026-10-08: Sophos re-signs `*.naukri.com`, Chromium → `ERR_CERT_AUTHORITY_INVALID` (code keeps TLS checks on) | Jobs fall back to the snippet (no failure) | Network/OS: exclude Naukri from inspection or trust the CA (ops) |
+| 17 | ~~Detail pages fail behind a TLS-inspecting firewall~~ **Fixed** | 2026-10-08: Sophos re-signed `*.naukri.com` (Chromium → `ERR_CERT_AUTHORITY_INVALID`); fixed on the network/OS side, issuer is now GlobalSign, TLS checks stay on in code. Live fetch via worker verified 2026-10-08: 4/4 new jobs got the full JD (`json_ld`), one at a time on `job-agent-browser` | — | Done (ops) |
 
 ## Tech debt (additional findings)
 

@@ -75,7 +75,8 @@ clicks, **logged out** (public page; keeps this traffic away from the apply acco
 
 **TLS inspection:** on a network whose firewall re-signs HTTPS (seen 2026-10-08: Sophos CA issuing
 `*.naukri.com`), Chromium fails with `ERR_CERT_AUTHORITY_INVALID`. The code does not disable TLS
-checks; the job then continues with the snippet. Fix on the network/OS side.
+checks; the job then continues with the snippet. Fix on the network/OS side (done for the dev
+network on 2026-10-08: issuer is GlobalSign again, see [known issue 17](12-roadmap-and-status.md#known-issues)).
 
 Fixtures: `uv run python -m scripts.inspect_job_page <job_id>...` opens the pages (headed, delay
 between pages) and writes trimmed fixtures (JSON-LD + JD section, ~9 KB instead of ~260 KB) to
