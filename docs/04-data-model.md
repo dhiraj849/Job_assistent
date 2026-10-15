@@ -33,6 +33,8 @@ erDiagram
         timestamptz last_seen_at "default now(), bumped on re-sighting"
         varchar_30 status "indexed, default discovered (JobStatus)"
         timestamptz status_updated_at "default now()"
+        timestamptz company_site_opened_at "nullable; first time WE (worker or inspector) clicked Apply on company site"
+        text company_site_url "nullable; where that click led (the company page, not an ATS iframe)"
     }
     job_matches {
         int id PK
@@ -52,13 +54,16 @@ erDiagram
     applications {
         int id PK
         int job_id FK, UK "jobs.id, unique: one application per job"
-        varchar_20 outcome "pending | applied | needs_manual | failed | expired (CHECK)"
-        text reason "default '', required for needs_manual / failed"
+        varchar_20 outcome "pending | applied | needs_manual | failed | expired | ready_for_you (CHECK)"
+        text reason "default '', required for needs_manual / failed / ready_for_you"
         boolean dry_run "default false"
         timestamptz approved_at "NOT NULL: a row exists only after approval"
         text approval_note "default '', from the decide signal"
         timestamptz applied_at "set iff outcome = applied"
         varchar_500 artifacts_dir "nullable, e.g. artifacts/apply/25"
+        text external_url "nullable; company-site form URL (page or ATS iframe)"
+        varchar_30 portal "nullable; generic_form, greenhouse, lever, workday, ..."
+        varchar_100 human_steps "default ''; comma list seen on the page: captcha, otp"
         timestamptz created_at "default now()"
         timestamptz updated_at "default now(), set on every write"
     }
@@ -83,8 +88,8 @@ Notes on current behaviour:
 - `jobs.status` is a plain `String(30)`, not a DB enum, so adding a value needs no migration. Allowed
   values live in one place: `JobStatus` (`app/models/job_status.py`): `discovered`, `filtered_out`,
   `shortlisted`, `matched`, `awaiting_approval`, `approved`, `rejected`, `expired`,
-  `applied_dry_run`, `applied`, `needs_manual`, `failed` (`applied` / `needs_manual` were added
-  without a migration). Only the Temporal workflows and their activities change it, through
+  `applied_dry_run`, `applied`, `needs_manual`, `ready_for_you`, `failed` (`applied` /
+  `needs_manual` / `ready_for_you` were added without a migration). Only the Temporal workflows and their activities change it, through
   `JobRepository.update_status` (which also sets `status_updated_at`).
   - **`applied` is terminal:** every `jobs.status` write (`_set_job_status`, used by `update_status`
     and the combined commits) has `WHERE NOT EXISTS (live applied applications row)` unless the new
@@ -133,7 +138,20 @@ Notes on current behaviour:
 - `JobRepository.get_pending_approvals()` joins `jobs` (status `awaiting_approval`) with `job_matches`
   for `scripts/list_pending.py`; `get_jobs_needing_attention()` outer-joins `jobs` (status
   `needs_manual` / `failed`) with `applications` for the reason (none if the workflow failed before
-  approval).
+  approval). `get_ready_for_you()` lists `ready_for_you` rows with portal, human steps and URL.
+- **Company-site apply** (migration `ff13a6004feb`). The click is stored on **`jobs`**, because the
+  inspector can click before any approval, when there is no `applications` row.
+  `mark_company_site_opened(job_id, url)` keeps the first click time and the latest known URL. It
+  does not commit: the worker commits it with the result (`save_apply_result`, which also writes
+  `external_url`, `portal`, `human_steps`), even a `failed` one, and the inspector commits it itself.
+  Naukri shows such a job as "Applied" from then on (issue #18), so `ApplyService` re-checks
+  `company_site_url` directly instead of trusting Naukri (`get_company_site_click()`).
+  `count_applied_since()` counts a company-site click on its day for approved rows, and once applied
+  counts it by `applied_at` instead (never twice). When I submit the form myself,
+  `scripts/apply_company_site.py` records it with `record_manual_apply()`.
+  One-off backfill on 2026-10-15: jobs 2, 3, 4, 20 and 455, clicked by the inspector earlier, got
+  their click time and URL from `artifacts/inspect/company/<id>/`. Job 20's click had hit a
+  browser error page, so its URL stays NULL.
 - `job_matches.job_id` is `UNIQUE` → one evaluation per job, globally. Correct for one user; wrong
   once there are multiple users or profile versions.
 - No `ON DELETE` behaviour on the FKs; deleting a job with a match, an application or a decision fails (wanted for
@@ -156,9 +174,10 @@ Notes on current behaviour:
 
 | Constraint | Rule | Why |
 |---|---|---|
-| `ck_applications_outcome` | `outcome IN ('pending','applied','needs_manual','failed','expired')` (`expired` since `a7664589ce5e`; its downgrade maps `expired` → `pending` first) | No typo values in the audit table (unlike the flexible `jobs.status`); a new value needs a migration. |
+| `ck_applications_outcome` | `outcome IN ('pending','applied','needs_manual','failed','expired','ready_for_you')` (`expired` since `a7664589ce5e`, `ready_for_you` since `ff13a6004feb`; each downgrade first maps its value to an older one: `expired` → `pending`, `ready_for_you` → `needs_manual` with the URL added to the reason) | No typo values in the audit table (unlike the flexible `jobs.status`); a new value needs a migration. |
 | `ck_applications_applied_at` | `(outcome = 'applied') = (applied_at IS NOT NULL)` | `applied_at` exactly when applied. |
-| `ck_applications_reason` | `outcome NOT IN ('needs_manual','failed') OR reason <> ''` | A human must see what to do next. |
+| `ck_applications_reason` | `outcome NOT IN ('needs_manual','failed','ready_for_you') OR reason <> ''` | A human must see what to do next. |
+| `ck_applications_ready_has_url` | `outcome <> 'ready_for_you' OR external_url IS NOT NULL` | The fill session needs a page to open. |
 | `ck_applications_applied_after_approval` | `applied_at >= approved_at` | Never applied before approval (passes while `applied_at` is NULL). |
 | NOT NULL `approved_at` | | A row exists only after a human approval. |
 

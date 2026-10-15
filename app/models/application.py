@@ -16,6 +16,9 @@ class ApplicationOutcome(StrEnum):
     # tried. Not "pending" any more (no workflow will apply it), so lists
     # and stats do not mistake it for a job still in the queue.
     EXPIRED = "expired"
+    # Company-site form found and checked; I fill and submit it with
+    # scripts/apply_company_site.py.
+    READY_FOR_YOU = "ready_for_you"
 
 
 class Application(BaseModel):
@@ -28,6 +31,10 @@ class Application(BaseModel):
     approval_note: str = ""
     applied_at: datetime | None = None
     artifacts_dir: str | None = None
+    # Company-site jobs only.
+    external_url: str | None = None
+    portal: str | None = None
+    human_steps: list[str] = []
 
     @property
     def applied_live(self) -> bool:

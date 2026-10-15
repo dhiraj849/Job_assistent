@@ -85,6 +85,16 @@ def _pick_text(wanted: str, options: list[str]) -> str | None:
     return fitting[0] if len(fitting) == 1 else None
 
 
+def _pick_place(place: str, options: list[str]) -> str | None:
+    """The one option naming my city, also inside a group ("Noida / Delhi / Gurgaon",
+    Naukri chatbot 2026-10-15). Exact matches win; two fitting options mean None."""
+    if exact := _pick_text(place, options):
+        return exact
+    wanted = _norm(place)
+    fitting = [o for o in options if wanted in (_norm(part) for part in re.split(r"[/,|]", o))]
+    return fitting[0] if len(fitting) == 1 else None
+
+
 # --- Unit scales ---------------------------------------------------------------
 
 
@@ -233,7 +243,7 @@ def _rules(answers: ApplicationAnswers) -> list[_Rule]:
         _Rule(
             "current_location",
             lambda t, a: _has(t, "current location", "currently located", "currently based", "currently residing"),
-            lambda q, t, a: _pick_text(a.current_location, q.options) if q.options else a.current_location,
+            lambda q, t, a: _pick_place(a.current_location, q.options) if q.options else a.current_location,
         ),
         _Rule("skill_years", _is_skill_years, _skill_years_answer),
         _Rule(

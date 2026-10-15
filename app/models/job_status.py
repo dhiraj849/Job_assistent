@@ -19,4 +19,6 @@ class JobStatus(StrEnum):
     APPLIED = "applied"
     # Approved, but a human must finish it (company-site apply, unknown question).
     NEEDS_MANUAL = "needs_manual"
+    # Company-site form ready; waiting for me to fill + submit it.
+    READY_FOR_YOU = "ready_for_you"
     FAILED = "failed"

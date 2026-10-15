@@ -51,7 +51,7 @@ async def main(job_id: int, click: bool) -> int:
         return 1
 
     folder = ARTIFACTS_DIR / str(job_id)
-    folder.mkdir(parents=True, exist_ok=True)
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)  # personal data: only me
 
     browser = NaukriBrowser(
         headless=settings.BROWSER_HEADLESS,

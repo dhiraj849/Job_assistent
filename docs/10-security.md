@@ -61,15 +61,20 @@ Inspection artifacts (`artifacts/inspect/<job_id>/`) and apply artifacts
 the answers typed (CTC, notice period, location), so they contain PII. They are gitignored, local
 only (folder `0700`), never uploaded or sent to the LLM; delete them once a run is checked. Test
 fixtures in `tests/fixtures/naukri/` are cut down to the markup needed, with no account data.
-Logs record the question text and job id, never the typed answer values. `answers.yaml` (application answers: CTC, notice period…) is gitignored;
-only `answers.example.yaml` is committed.
+Logs record the question text and job id, never the typed answer values. `answers.yaml` (application answers: CTC, notice period…, and
+the `contact:` block: name, email, phone, resume path) and `learned_answers.yaml` (answers I approved
+for form fields) are gitignored; only `answers.example.yaml` is committed. Company-site previews
+(`artifacts/inspect/company/<run>/04_*`) show my contact details typed into the form and are PII
+too. The fill preview types those details into a third-party page, so that site's own scripts
+could read them even though nothing is submitted. It asks y/N first.
 
 ## PII in the candidate profile and resume
 
 | Data | Where | Rule |
 |---|---|---|
 | `profile.yaml` (name, experience, education, skills) | Local file, gitignored | Built. Never commit; `profile.example.yaml` holds dummy data only. |
-| Resume file | MinIO (planned) | Private bucket, no public URLs; local only. |
+| Resume file | Local path in `answers.yaml` (`contact.resume_path`); MinIO planned | Private bucket, no public URLs; local only. |
+| Resume **text** sent to Claude | Prompt in `app/llm/form_answerer.py` (fill preview only) | Built, approved 2026-10-15. The PDF's text, `profile.yaml` and `answers.yaml` without the contact block are sent, only to suggest form answers. No tools; every value is checked against a quote and approved by me. |
 | Profile sent to Claude | Prompt in `job_match_service.py` | **Currently the full `model_dump()` including `name` is sent.** Planned: send only fields needed for matching (experience, skills, education, target roles). |
 | Filled application forms / screenshots | MinIO (planned) | Contain PII; same retention as resume; deletable per job. |
 | Job postings | Postgres | Public data; low sensitivity. |

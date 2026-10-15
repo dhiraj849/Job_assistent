@@ -17,3 +17,13 @@ skill_years:
   fastapi: 1
   postgresql: 2
   docker: 1
+
+# Contact details for company career-site forms (optional; Naukri applies
+# work without it). Typed into the company's form exactly as written here.
+contact:
+  first_name: Your
+  last_name: Name
+  email: you@example.com
+  phone: "+91 98765 43210"
+  resume_path: /home/you/Documents/resume.pdf
+  linkedin_url: https://www.linkedin.com/in/your-profile

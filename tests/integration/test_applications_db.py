@@ -18,6 +18,7 @@ from app.db.database import database_url
 from app.db.job_repository import ApplicationNotWritableError, JobRepository
 from app.db.models import JobRecord
 from app.models.application import ApplicationOutcome
+from app.models.apply_result import CompanySite
 from app.models.decision import Decision
 from app.models.job_status import JobStatus
 
@@ -163,6 +164,8 @@ def test_status_and_application_change_together_or_not_at_all(monkeypatch):
         (dict(outcome="pending", applied_at=APPROVED_AT), "ck_applications_applied_at"),
         (dict(outcome="needs_manual", reason=""), "ck_applications_reason"),
         (dict(outcome="typo"), "ck_applications_outcome"),
+        (dict(outcome="ready_for_you", reason="x"), "ck_applications_ready_has_url"),
+        (dict(outcome="ready_for_you", reason="", external_url="https://x"), "ck_applications_reason"),
         (
             dict(outcome="applied", applied_at=APPROVED_AT - timedelta(minutes=1)),
             "ck_applications_applied_after_approval",
@@ -437,5 +440,70 @@ def test_daily_cap_does_not_count_expired_rows():
 
         assert await repo.count_applied_since(False, APPROVED_AT) == before
         assert await repo.count_applied_since(True, APPROVED_AT) == before_dry
+
+    run_in_rollback(test)
+
+
+# --- Company-site apply ---------------------------------------------------------------
+
+SITE = CompanySite(url="https://kmgus.com/careers/", portal="generic_form", human_steps=["captcha", "otp"])
+
+
+def test_company_site_result_is_saved_with_the_click_and_listed():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)
+        await repo.record_approval(job_id, APPROVED_AT, "", run_id())
+
+        await repo.mark_company_site_opened(job_id)  # no commit of its own...
+        await repo.save_apply_result(
+            job_id, ApplicationOutcome.READY_FOR_YOU, JobStatus.READY_FOR_YOU,
+            "form ready", False, "artifacts/apply/x", company_site=SITE,
+        )  # ...committed here, with the result
+
+        application = await repo.get_application(job_id)
+        assert application.outcome == ApplicationOutcome.READY_FOR_YOU
+        assert (application.external_url, application.portal) == (SITE.url, "generic_form")
+        assert application.human_steps == ["captcha", "otp"]
+        opened_at, url = await repo.get_company_site_click(job_id)
+        assert opened_at is not None and url is None
+        assert await job_status(session, job_id) == "ready_for_you"
+        ready = {row[0]: row for row in await repo.get_ready_for_you()}
+        assert ready[job_id][3:] == ("generic_form", "captcha,otp", SITE.url)
+
+    run_in_rollback(test)
+
+
+def test_company_site_click_counts_once_for_the_daily_cap():
+    async def test(repo: JobRepository, session):
+        before = await repo.count_applied_since(False, APPROVED_AT)
+        job_id = await new_job(session)
+        await repo.record_approval(job_id, APPROVED_AT, "", run_id())
+        await repo.mark_company_site_opened(job_id)
+        await repo.save_apply_result(
+            job_id, ApplicationOutcome.READY_FOR_YOU, JobStatus.READY_FOR_YOU,
+            "form ready", False, None, company_site=SITE,
+        )
+        assert await repo.count_applied_since(False, APPROVED_AT) == before + 1
+
+        # Submitted by me later: still one apply, now counted by applied_at.
+        assert await repo.record_manual_apply(job_id, "submitted on the company site")
+        assert await repo.count_applied_since(False, APPROVED_AT) == before + 1
+        assert await job_status(session, job_id) == "applied"
+
+    run_in_rollback(test)
+
+
+def test_company_site_click_is_on_the_job_even_without_approval():
+    async def test(repo: JobRepository, session):
+        job_id = await new_job(session)  # never approved: no applications row
+        assert await repo.get_company_site_click(job_id) == (None, None)
+
+        await repo.mark_company_site_opened(job_id)
+        first, _ = await repo.get_company_site_click(job_id)
+        await repo.mark_company_site_opened(job_id, "https://kmgus.com/careers/")
+        again, url = await repo.get_company_site_click(job_id)
+
+        assert first is not None and again == first  # the first click time is kept
+        assert url == "https://kmgus.com/careers/"
 
     run_in_rollback(test)

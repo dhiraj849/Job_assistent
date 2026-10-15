@@ -43,6 +43,14 @@ def test_live_company_site_page():
     assert classify_apply_button(buttons) == ApplyButtonType.COMPANY_SITE
 
 
+def test_live_already_applied_page():
+    # A <span>, not a <button>: read_apply_buttons finds it by id (APPLY_BUTTONS).
+    page = (FIXTURES / "already_applied.html").read_text(encoding="utf-8")
+    assert 'id="already-applied"' in page
+    assert APPLY_BUTTON_IDS["already-applied"] == ApplyButtonType.ALREADY_APPLIED.value
+    assert classify_apply_button([ApplyButton("already-applied", "Applied")]) == ApplyButtonType.ALREADY_APPLIED
+
+
 def test_naukri_apply():
     assert classify_apply_button([ApplyButton("", "Apply")]) == ApplyButtonType.NAUKRI_APPLY
 

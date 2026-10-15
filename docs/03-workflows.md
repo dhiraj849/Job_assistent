@@ -173,7 +173,9 @@ stateDiagram-v2
     awaiting_approval --> expired: no decision in 3 days + record_decision
     approved --> applied_dry_run: apply_job (dry_run)
     approved --> applied: apply_job (live) / already applied
-    approved --> needs_manual: company site / unknown question
+    approved --> needs_manual: unknown question / company site we cannot fill
+    approved --> ready_for_you: company site form found (apply_company_site.py is mine)
+    ready_for_you --> applied: I submit it + record_manual_apply
     approved --> failed: bad answers.yaml / browser error
     approved --> approved: daily cap full, sleep until next IST day
     approved --> expired: cap still full after 3 more days + expire_approval
@@ -187,6 +189,12 @@ stateDiagram-v2
     failed --> [*]
 ```
 
+A company-site job ends the workflow at `ready_for_you`. The rest happens outside Temporal: I
+run `scripts/apply_company_site.py`. No workflow can wait for me to solve a CAPTCHA. The workflow
+only mirrors the new outcome in `_final_status` (a query value, no new command), so it needs no
+`workflow.patched`. `tests/workflows/histories/ready_for_you_v1.json` (recorded from this code)
+replays in `test_ready_for_you_history_replays`.
+
 ### Apply safety rails (Built)
 
 `ApplyService.apply(job_id)` (called by the `apply_job` activity) runs these checks in order:
@@ -199,19 +207,26 @@ stateDiagram-v2
    and `jobs.status` is synced back to `applied`. `jobs.status` alone could not be trusted: the
    workflow writes `approved` before every apply, so a re-run workflow (or a manual apply while it
    waited) used to wipe `applied` and the job was applied again.
+   3b. **Company site already opened**: a `ready_for_you` row is returned as is, with no browser.
+   If `jobs.company_site_opened_at` is set (by the worker or the inspector), Naukri now says
+   "Applied" because of our click (issue #18), so Naukri is never asked again. The applier gets
+   `company_site_url` and checks that page directly. If the URL is unknown, the result is
+   `needs_manual`. A false `applied` is never recorded.
 4. **Daily cap** — counts `applications` rows applied (live, or dry run in dry-run mode) since the
-   start of the **IST day**. At `MAX_APPLIES_PER_DAY` → `skipped_cap` with `retry_after_seconds`
+   start of the **IST day**, plus company-site clicks on their day. At `MAX_APPLIES_PER_DAY` → `skipped_cap` with `retry_after_seconds`
    until IST midnight; the row stays `pending`. Dry runs never use up the live quota.
 5. **Answers** — `answers.yaml` is loaded and validated in both modes; missing / invalid → `failed`.
 6. **Apply** — `APPLY_MODE=dry_run`: logs only; the browser applier is never even built.
    `live`: `NaukriJobApplier.apply(job_id, job, answers)` (`app/browser/job_applier.py`) →
-   `ApplierResult` `applied` / `needs_manual` / `already_applied` with a `reason` (e.g. the unknown
-   question) copied into `ApplyResult.reason`; any exception (incl. expired session, apply not
+   `ApplierResult` `applied` / `needs_manual` / `already_applied` / `ready_for_you` with a `reason`
+   (e.g. the unknown question, or the fill command) copied into `ApplyResult.reason`, plus
+   `company_site` (URL, portal, human steps) saved on the row. The applier gets an
+   `on_company_site_click` hook (`mark_company_site_opened`), which runs right before the click; any exception (incl. expired session, apply not
    confirmed) → `failed`. The lock stays held during the browser apply (minutes), which is fine
    with one apply at a time.
 
 `ApplyResult` (`app/models/apply_result.py`): `outcome` (`applied`, `needs_manual`, `failed`,
-`skipped_cap`, `already_applied`), `dry_run`, `reason`, `retry_after_seconds`.
+`skipped_cap`, `already_applied`, `ready_for_you`), `dry_run`, `reason`, `retry_after_seconds`.
 
 The activity writes the result itself with `JobRepository.save_apply_result`: `applications`
 (`outcome`, `reason`, `dry_run`, `applied_at`, `artifacts_dir` = `artifacts/apply/<job_id>`) **and**
@@ -372,7 +387,8 @@ stateDiagram-v2
 | `expired` (after approval) | Daily cap full on 4 days in a row; never tried | `jobs.status` + `applications` `expired` (reason) | Yes |
 | `applied_dry_run` | Dry-run apply logged | `jobs.status` + `applications` `applied`, `dry_run=true` | Yes |
 | `applied` | Applied for real (or Naukri already showed "Applied", or `mark_applied`) | `jobs.status` + `applications` `applied` | Yes |
-| `needs_manual` | Approved, but a human must finish it (company site, unknown question) | `jobs.status` + `applications` (reason) | Yes |
+| `needs_manual` | Approved, but a human must finish it (unknown question; company site with login, wizard, sensitive fields or no form) | `jobs.status` + `applications` (reason, URL) | Yes |
+| `ready_for_you` | Company-site form found and checked; I fill + submit it with `apply_company_site.py` | `jobs.status` + `applications` (URL, portal, human steps) | Yes |
 | `failed` | Activity retries exhausted, bad `answers.yaml`, browser error, expired session, apply not confirmed | `jobs.status` (+ `applications` with reason if it failed in `apply_job`) | Yes |
 | `applying` | Submission in progress | `applications.outcome` | No |
 

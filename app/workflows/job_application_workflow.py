@@ -308,4 +308,7 @@ def _final_status(result: ApplyResult) -> JobStatus:
         return JobStatus.APPLIED
     if result.outcome == ApplyOutcome.NEEDS_MANUAL:
         return JobStatus.NEEDS_MANUAL
+    # Query mirror only (apply_job already wrote it): no new command, so no patch.
+    if result.outcome == ApplyOutcome.READY_FOR_YOU:
+        return JobStatus.READY_FOR_YOU
     return JobStatus.FAILED

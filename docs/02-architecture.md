@@ -219,6 +219,26 @@ flowchart TB
 - Temporal workflow code must be deterministic: no I/O, no `datetime.now()`, no randomness
   — all of that lives in activities.
 
+### Company-site apply data flow (Built)
+
+```mermaid
+sequenceDiagram
+    participant W as Worker (apply_job)
+    participant N as Naukri job page
+    participant C as Company site
+    participant DB as Postgres (applications)
+    participant Me as Me (apply_company_site.py)
+    W->>DB: mark_company_site_opened (same transaction)
+    W->>N: click "Apply on company site"
+    N-->>C: new tab / redirect
+    W->>C: read HTML (+ iframes), open hidden form, never type
+    W->>DB: ready_for_you + URL, portal, human steps (or needs_manual)
+    Me->>DB: list_pending: "Ready for you"
+    Me->>C: open URL, fill (rules, learned, AI I approve), read back
+    Me->>C: CAPTCHA / OTP / Submit by hand
+    Me->>DB: record_manual_apply (applied)
+```
+
 ## 5. Current vs target — summary
 
 | Concern | Current | Target |

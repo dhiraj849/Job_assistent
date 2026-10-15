@@ -7,6 +7,7 @@ venv/
 *.zip
 profile.yaml
 answers.yaml
+learned_answers.yaml
 # Encrypted Naukri session and inspection dumps (contain personal data)
 secrets/
 artifacts/
@@ -14,3 +15,6 @@ artifacts/
 site/
 # Makefile runtime files (worker PID + log)
 .run/
+# Resumes kept next to answers.yaml (personal data)
+/*.pdf
+/*.docx

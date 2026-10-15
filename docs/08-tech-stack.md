@@ -18,6 +18,7 @@ subscription. Versions are from `pyproject.toml`, `docker-compose.yml` and `.pyt
 | Embeddings | fastembed, `BAAI/bge-small-en-v1.5` (384-d) | Built | Local CPU/ONNX, small, no PyTorch ([ADR-005](adr/ADR-005-fastembed-local-embeddings.md)) | sentence-transformers, Ollama embeddings, OpenAI | Free |
 | LLM (primary) | Claude via `claude-agent-sdk` | Built | Uses existing subscription, JSON-schema output ([ADR-007](adr/ADR-007-claude-agent-sdk-llm-provider.md)) | Anthropic API (paid per token), OpenAI | Existing subscription |
 | LLM (fallback) | Ollama (local model) | Planned | Offline / rate-limit fallback | llama.cpp, vLLM | Free (local compute) |
+| Resume text | pypdf 6.20 | Built | Pure-Python PDF text extraction for grounding AI form answers ([ADR-015](adr/ADR-015-pypdf-resume-text.md)) | pdfminer.six, PyMuPDF (AGPL), a hand-kept `resume.md` | Free |
 | Session encryption | `cryptography` (Fernet) | Built | Encrypts the saved Naukri session at rest; simple symmetric API ([ADR-014](adr/ADR-014-encrypted-naukri-session.md)) | `age`, OS keyring, plain file | Free |
 | Logging | structlog (console / JSON) | Built | Structured events, contextvars | loguru, stdlib logging | Free |
 | Workflow engine | Temporal (self-hosted) + `temporalio` SDK | In progress | Durable execution, signals, timers, schedules ([ADR-006](adr/ADR-006-temporal-durable-workflows.md)) | Celery/ARQ + Redis, Prefect, LangGraph | Free |

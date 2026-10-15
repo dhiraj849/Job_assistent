@@ -108,6 +108,16 @@ else `weak`. Saved immediately per job via `save_match` (one commit per job).
 `JobRankingService.rank` sorts by `(overall_score, skill_match, role_match, experience_match)`
 descending. `main.py` prints title, company, score, level, recommendation.
 
+## Learned answers: related labels
+
+The same embedding model also finds company-form answers I gave before for a **related** label
+(`app/services/learned_answers.similar_answers`), e.g. "Total Experience" for "Years of
+experience". It embeds the new label and every saved label (no Qdrant: the file is small), keeps
+those with cosine ≥ `SIMILAR_MIN_SCORE` (0.70), one per distinct value, best 3. For a select or
+radio, only answers that are one of its options count. Scores of right and wrong matches overlap
+(2026-10-15: "current company" ~ "current employer" 0.85, ~ "previous company" 0.84), so these are
+only candidates: I pick one in the fill review, nothing is filled from a score alone.
+
 ## Useful scripts
 
 | Script | Purpose |

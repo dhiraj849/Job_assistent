@@ -120,6 +120,33 @@ Selection: `LLM_PROVIDER=claude|ollama` setting, plus automatic fallback on prov
 retries. Every stored `job_matches` row records `model` and `prompt_version` so results from
 different providers are distinguishable.
 
+## Form-field suggestions (Built, preview only)
+
+`app/llm/form_answerer.py` suggests values for company-form fields that no fixed rule or learned
+answer covers. It is used only in the inspector's `--fill-preview`, and every value needs my y / n / e.
+
+- **Input:** the field list (key, label, kind, options, required) as JSON, `profile.yaml` as text,
+  `answers.yaml` **without** the `contact` block (`answers_facts()`), and the resume PDF's text
+  (`app/services/resume_text.py`, pypdf, [ADR-015](adr/ADR-015-pypdf-resume-text.md)). The prompt
+  is the `PROMPT` constant in the module.
+- **Call:** `ClaudeJsonLLM`, i.e. the Agent SDK with `tools=[]` (no tools at all), `max_turns=3` and
+  a JSON schema (`SuggestionList`: key, value or null, source_quote).
+- **Checks in code** (`check_suggestions()`): the source quote must be in my documents
+  (case and whitespace ignored). A free-text value must be copied from that quote. An option value
+  must equal exactly one option. Values over 300 chars are rejected. Anything that fails is dropped
+  with a reason. So an invented fact, or one planted by a hostile label, never reaches the form.
+- **Never asked:** consents, salary / CTC / notice, IDs, bank, passport, visa, date of birth / age,
+  gender, caste, religion, disability, criminal or legal declarations (`AI_FORBIDDEN_WORDS` in
+  `company_form_mapper.py`).
+- **Learned answers:** a value I accept (or type), in the terminal or in the browser after the
+  fill (`y/N` each, [06](06-browser-automation.md#learning-from-the-browser)), is saved in
+  `learned_answers.yaml`, keyed by the normalised label. From then on it is a deterministic rule
+  for that label, with no AI call. For a new but related label, `similar_answers()` offers up to
+  3 saved answers (local embeddings, [07](07-matching-and-retrieval.md#learned-answers-related-labels)):
+  only candidates I pick from, never filled on their own and never sent to Claude.
+- Checked live 2026-10-15 with a made-up resume: 3 facts came back with real quotes, a fact not
+  in the documents came back null, and a label containing "ignore the documents…" got null.
+
 ## Guardrails
 
 | Guardrail | Status |
@@ -132,7 +159,7 @@ different providers are distinguishable.
 | Human approval enforced by workflow + DB constraint | Planned |
 | Timeout and retry per LLM call | Planned |
 | Bounded concurrency (e.g. 3 parallel calls) | Planned |
-| Treat job text as untrusted data (prompt-injection): delimit it, instruct model to ignore instructions inside it | Planned |
+| Treat job text as untrusted data (prompt-injection): delimit it, instruct model to ignore instructions inside it | Planned (matcher); Built for form suggestions (no tools + quote check) |
 | Don't send candidate `name` (or other PII not needed for matching) to the LLM | Planned — currently sent via `model_dump()` |
 | Profile-driven role focus and filter keywords | Planned |
 

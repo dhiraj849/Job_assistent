@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><title>Apply - Acme</title></head>
+<body><form action="/apply" method="post" enctype="multipart/form-data">
+  <label for="n">Name *</label><input id="n" name="name" required>
+  <label for="e">Email *</label><input id="e" name="email" type="email" required>
+  <label for="a">Aadhaar Number *</label><input id="a" name="aadhaar" required>
+  <label for="o">Enter OTP sent to your mobile</label><input id="o" name="otp_code">
+  <label for="r">Resume *</label><input id="r" name="resume" type="file" required>
+  <div class="g-recaptcha" data-sitekey="k"></div>
+  <button type="submit">Submit</button>
+</form></body></html>

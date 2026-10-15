@@ -572,3 +572,30 @@ def test_every_saved_history_replays():
     for path in files:
         history = WorkflowHistory.from_json(path.stem, path.read_text())
         asyncio.run(replayer().replay_workflow(history))
+
+
+# --- Company site: ready_for_you ---------------------------------------------------
+# apply_job may now return READY_FOR_YOU. The workflow only mirrors it in its
+# query state (no new command), so no patch; ready_for_you_v1.json was
+# recorded from this code and must keep replaying.
+
+
+def test_company_site_ready_ends_the_workflow():
+    ready = ApplyResult(outcome=ApplyOutcome.READY_FOR_YOU, dry_run=False, reason="form ready")
+    result, statuses, applied, history = asyncio.run(
+        run_workflow("strong", decision=True, apply_results=[ready])
+    )
+
+    assert result == "ready_for_you"
+    assert statuses == PRE_APPROVAL + ["approved"]
+    assert applied == [JOB_ID]
+    asyncio.run(replayer().replay_workflow(history))
+
+
+def test_ready_for_you_history_replays():
+    history = WorkflowHistory.from_json(
+        "ready_for_you_v1", (HISTORIES / "ready_for_you_v1.json").read_text()
+    )
+    asyncio.run(replayer().replay_workflow(history))
+    completed = history.events[-1].workflow_execution_completed_event_attributes
+    assert completed.result.payloads[0].data == b'"ready_for_you"'

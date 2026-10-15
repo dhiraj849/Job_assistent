@@ -49,6 +49,12 @@ class JobRecord(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
+    # When we (worker or inspector, approved or not) clicked "Apply on company
+    # site", and where it led. Naukri shows the job as "Applied" from then on,
+    # so its "already applied" is no proof of an application (issue #18).
+    company_site_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    company_site_url: Mapped[str | None] = mapped_column(Text)
+
 
 class JobMatchRecord(Base):
     __tablename__ = "job_matches"
@@ -94,8 +100,13 @@ class ApplicationRecord(Base):
         ),
         # A human must be able to see what to do next.
         CheckConstraint(
-            "outcome NOT IN ('needs_manual', 'failed') OR reason <> ''",
+            "outcome NOT IN ('needs_manual', 'failed', 'ready_for_you') OR reason <> ''",
             name="ck_applications_reason",
+        ),
+        # The fill session needs somewhere to go.
+        CheckConstraint(
+            "outcome <> 'ready_for_you' OR external_url IS NOT NULL",
+            name="ck_applications_ready_has_url",
         ),
         CheckConstraint("applied_at >= approved_at", name="ck_applications_applied_after_approval"),
     )
@@ -113,6 +124,12 @@ class ApplicationRecord(Base):
     approval_note: Mapped[str] = mapped_column(Text, server_default="")
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     artifacts_dir: Mapped[str | None] = mapped_column(String(500))
+
+    # Company-site jobs only (see Application).
+    external_url: Mapped[str | None] = mapped_column(Text)
+    portal: Mapped[str | None] = mapped_column(String(30))
+    # Comma-separated, e.g. "captcha,otp"; empty when none was seen.
+    human_steps: Mapped[str] = mapped_column(String(100), server_default="")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><title>Careers - Acme Software</title></head>
+<body>
+<header><form action="/search" role="search"><input type="search" name="q" placeholder="Search jobs"><button>Search</button></form></header>
+<main><h1>Apply: Python Developer</h1>
+<form action="/careers/apply" method="post" enctype="multipart/form-data">
+  <label for="fullname">Full Name*</label><input id="fullname" name="fullname" type="text" required>
+  <label for="mail">Email Address*</label><input id="mail" name="mail" type="email" required>
+  <label for="mobile">Mobile Number*</label><input id="mobile" name="mobile" type="tel" required>
+  <label for="exp">Total Experience (years)</label><input id="exp" name="exp" type="number">
+  <label for="cv">Upload CV*</label><input id="cv" name="cv" type="file" required>
+  <label><input type="checkbox" name="consent" required> I agree to the privacy policy</label>
+  <button type="submit">Submit</button>
+</form></main>
+</body></html>

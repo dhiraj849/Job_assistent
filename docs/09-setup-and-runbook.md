@@ -108,7 +108,9 @@ Notes:
 | Temporal worker (runs both workflows + activities) | `uv run python -m app.workflows.worker` |
 | Start discovery workflow (needs worker; starts one `job-{id}` workflow per new job) | `uv run python -m scripts.start_discovery --keyword "Python" --location "Noida"` |
 | Start the application workflow for one existing job | `uv run python -m scripts.start_job_workflow <job_id>` |
-| List jobs awaiting your approval, then `needs_manual` / `failed` jobs with their reason | `uv run python -m scripts.list_pending` |
+| List jobs awaiting your approval, company-site forms ready for you (grouped by CAPTCHA / OTP), then `needs_manual` / `failed` jobs with their reason | `uv run python -m scripts.list_pending` |
+| Fill a `ready_for_you` company-site form, then finish it yourself (CAPTCHA / OTP / Submit) and record it | `uv run python -m scripts.apply_company_site <job_id>` |
+| Look at company-site jobs (no click), or open one (`--click`, Naukri then shows it Applied), or preview the fill | `uv run python -m scripts.inspect_company_site <job_id>... [--click] [--fill-preview]` |
 | Approve / reject a job (apply follows `APPLY_MODE`, default dry-run) | `uv run python -m scripts.decide_job <job_id> yes\|no ["note"]` |
 | Log in to Naukri once and save the encrypted session (headed) | `uv run python -m scripts.naukri_login` |
 | Inspect a job's apply button, logged in (saves to `artifacts/inspect/<id>/`) | `uv run python -m scripts.inspect_apply_flow <job_id>` |

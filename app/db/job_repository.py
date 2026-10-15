@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta
 
 import structlog
-from sqlalchemy import and_, func, not_, select, update
+from sqlalchemy import and_, func, not_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ApplicationRecord, JobDecisionRecord, JobMatchRecord, JobRecord
 from app.models.application import Application, ApplicationOutcome
+from app.models.apply_result import CompanySite
 from app.models.decision import Decision, JobDecision
 from app.models.job import Job
 from app.models.job_details import JobDetailPage, JobDetails
@@ -286,6 +287,9 @@ class JobRepository:
             approval_note=record.approval_note,
             applied_at=record.applied_at,
             artifacts_dir=record.artifacts_dir,
+            external_url=record.external_url,
+            portal=record.portal,
+            human_steps=[step for step in record.human_steps.split(",") if step],
         )
 
     async def record_approval(
@@ -390,25 +394,34 @@ class JobRepository:
         reason: str,
         dry_run: bool,
         artifacts_dir: str | None,
+        company_site: CompanySite | None = None,
     ) -> None:
         """Write the apply result to applications AND jobs.status in ONE commit.
 
         Either both change or neither does. Called inside the apply lock,
-        so this commit also releases the lock.
+        so this commit also releases the lock (and commits a
+        mark_company_site_opened written earlier in the same transaction).
         """
         applied = outcome == ApplicationOutcome.APPLIED
+        values = dict(
+            outcome=outcome.value,
+            reason=reason,
+            dry_run=dry_run,
+            applied_at=func.clock_timestamp() if applied else None,
+            artifacts_dir=artifacts_dir,
+            updated_at=func.clock_timestamp(),
+        )
+        if company_site is not None:
+            values.update(
+                external_url=company_site.url,
+                portal=company_site.portal,
+                human_steps=",".join(company_site.human_steps),
+            )
         stmt = (
             update(ApplicationRecord)
             .where(ApplicationRecord.job_id == job_id)
             .where(_NOT_APPLIED_LIVE)
-            .values(
-                outcome=outcome.value,
-                reason=reason,
-                dry_run=dry_run,
-                applied_at=func.clock_timestamp() if applied else None,
-                artifacts_dir=artifacts_dir,
-                updated_at=func.clock_timestamp(),
-            )
+            .values(**values)
             .returning(ApplicationRecord.id)
         )
         if await self.session.scalar(stmt) is None:
@@ -421,6 +434,53 @@ class JobRepository:
         await self.session.commit()
 
         logger.info("apply_result_saved", job_id=job_id, outcome=outcome.value, dry_run=dry_run)
+
+    async def mark_company_site_opened(self, job_id: int, url: str | None = None) -> None:
+        """Note on the job that we click (or clicked) "Apply on company site".
+
+        The first click time is kept; a known URL is kept unless a new one is
+        given. No commit: the worker commits it with the apply result
+        (save_apply_result, also a FAILED one) inside the apply lock; the
+        inspector commits it itself.
+        """
+        await self.session.execute(
+            update(JobRecord)
+            .where(JobRecord.id == job_id)
+            .values(
+                company_site_opened_at=func.coalesce(
+                    JobRecord.company_site_opened_at, func.clock_timestamp()
+                ),
+                company_site_url=func.coalesce(url, JobRecord.company_site_url),
+            )
+        )
+
+    async def get_company_site_click(self, job_id: int) -> tuple[datetime | None, str | None]:
+        """(opened_at, url) of our company-site click on this job; (None, None) if never."""
+        row = (
+            await self.session.execute(
+                select(JobRecord.company_site_opened_at, JobRecord.company_site_url).where(
+                    JobRecord.id == job_id
+                )
+            )
+        ).one_or_none()
+        return (row[0], row[1]) if row else (None, None)
+
+    async def get_ready_for_you(self) -> list[tuple[int, str, str, str, str, str]]:
+        """Company-site jobs waiting for me: (id, title, company, portal, human_steps, external_url)."""
+        result = await self.session.execute(
+            select(
+                JobRecord.id,
+                JobRecord.title,
+                JobRecord.company,
+                func.coalesce(ApplicationRecord.portal, ""),
+                ApplicationRecord.human_steps,
+                ApplicationRecord.external_url,
+            )
+            .join(ApplicationRecord, ApplicationRecord.job_id == JobRecord.id)
+            .where(ApplicationRecord.outcome == ApplicationOutcome.READY_FOR_YOU.value)
+            .order_by(ApplicationRecord.updated_at)
+        )
+        return [tuple(row) for row in result.all()]
 
     async def expire_approval(self, job_id: int, reason: str) -> bool:
         """Mark an approval that was never tried (daily cap stayed full) as
@@ -510,13 +570,29 @@ class JobRepository:
         return [tuple(row) for row in result.all()]
 
     async def count_applied_since(self, dry_run: bool, since: datetime) -> int:
-        """Applies (live or dry-run) done at or after `since`, for the daily cap."""
+        """Applies (live or dry-run) done at or after `since`, for the daily cap.
+
+        A company-site click counts too, on the day of the click: Naukri
+        shows that job as applied from then on. Counted once: by applied_at
+        once applied, else by the click.
+        """
         return await self.session.scalar(
             select(func.count())
             .select_from(ApplicationRecord)
-            .where(ApplicationRecord.outcome == ApplicationOutcome.APPLIED.value)
+            .join(JobRecord, JobRecord.id == ApplicationRecord.job_id)
             .where(ApplicationRecord.dry_run.is_(dry_run))
-            .where(ApplicationRecord.applied_at >= since)
+            .where(
+                or_(
+                    and_(
+                        ApplicationRecord.outcome == ApplicationOutcome.APPLIED.value,
+                        ApplicationRecord.applied_at >= since,
+                    ),
+                    and_(
+                        ApplicationRecord.outcome != ApplicationOutcome.APPLIED.value,
+                        JobRecord.company_site_opened_at >= since,
+                    ),
+                )
+            )
         )
 
     async def get_jobs_needing_attention(

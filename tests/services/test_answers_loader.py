@@ -70,3 +70,42 @@ def test_unknown_key_is_rejected(tmp_path):
 
     with pytest.raises(ValidationError):
         load_answers(write(tmp_path, bad))
+
+
+CONTACT_YAML = (
+    "contact:\n"
+    "  first_name: Asha\n"
+    "  last_name: Verma\n"
+    "  email: asha@example.com\n"
+    "  phone: '+91 98765 43210'\n"
+    "  resume_path: /tmp/resume.pdf\n"
+)
+
+
+def test_contact_is_optional(tmp_path):
+    assert load_answers(write(tmp_path, VALID_YAML)).contact is None
+
+
+def test_example_contact_loads():
+    contact = load_answers(EXAMPLE_ANSWERS).contact
+    assert contact is not None and contact.full_name == "Your Name"
+
+
+def test_contact_loads(tmp_path):
+    contact = load_answers(write(tmp_path, VALID_YAML + CONTACT_YAML)).contact
+    assert contact.full_name == "Asha Verma"
+    assert contact.resume_path == Path("/tmp/resume.pdf")
+
+
+@pytest.mark.parametrize(
+    "line, bad",
+    [
+        ("  email: asha@example.com\n", "  email: asha.example.com\n"),
+        ("  phone: '+91 98765 43210'\n", "  phone: '98765'\n"),
+        ("  resume_path: /tmp/resume.pdf\n", "  resume_path: /tmp/resume.txt\n"),
+        ("  last_name: Verma\n", "  last_name: Verma\n  lastname: typo\n"),
+    ],
+)
+def test_bad_contact_fails_loudly(tmp_path, line, bad):
+    with pytest.raises(ValidationError):
+        load_answers(write(tmp_path, VALID_YAML + CONTACT_YAML.replace(line, bad)))

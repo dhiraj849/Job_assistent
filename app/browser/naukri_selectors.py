@@ -24,9 +24,16 @@ APPLY_BUTTON_IDS = {
     "company-site-button": "company_site",
     # VERIFIED 2026-10-07 (tests/fixtures/naukri/naukri_apply.html).
     "apply-button": "naukri_apply",
-    # NOT VERIFIED.
+    # VERIFIED 2026-10-15 (tests/fixtures/naukri/already_applied.html; a <span>).
+    # Naukri shows it after "Apply on company site" was clicked, even if
+    # nothing was submitted on the company site (job 455).
     "already-applied": "already_applied",
 }
+
+# The "Apply on company site" button. A <button> with no href: the company
+# URL is only known after clicking it (new tab or redirect).
+# VERIFIED 2026-09-24 (tests/fixtures/naukri/company_site.html).
+COMPANY_SITE_BUTTON = "#company-site-button"
 
 # All header buttons that can hold the apply action. The text fallbacks catch
 # a renamed id; classify_apply_button still decides by exact text.
@@ -38,13 +45,28 @@ APPLY_BUTTONS = ", ".join(
 # --- After clicking Apply ----------------------------------------------------------
 
 # Naukri's "chatbot" drawer that asks screening questions one at a time.
-# NOT VERIFIED (all chatbot selectors). Hint: job pages have an empty
-# <div id="chatbot-container"> (seen 2026-10-07); the drawer likely renders there.
+# Seen live 2026-10-15 after one Apply click on job 1076
+# (tests/fixtures/naukri/chatbot.html): a greeting, then one .botMsg per
+# question; the last one is the open question. Some jobs show no greeting
+# (job 7, tests/fixtures/naukri/chatbot_radio.html).
+# VERIFIED 2026-10-15 (tests/fixtures/naukri/chatbot.html).
 CHATBOT = ".chatbot_DrawerContentWrapper"
+# VERIFIED 2026-10-15 (tests/fixtures/naukri/chatbot.html; greeting + question).
 CHATBOT_BOT_MESSAGE = f"{CHATBOT} .botMsg"
+# VERIFIED 2026-10-15 (tests/fixtures/naukri/chatbot.html): the footer's
+# div.textArea; present but hidden (d-none) during a checkbox question.
+# Typing into it is not verified live yet.
 CHATBOT_TEXT_INPUT = f"{CHATBOT} [contenteditable='true']"
+# VERIFIED 2026-10-15 (tests/fixtures/naukri/chatbot_radio.html, job 7):
+# div.ssrc__radio-btn-container > input.ssrc__radio + label.ssrc__label (the
+# option text, for= the input id); clicking the label checks the radio.
 CHATBOT_RADIO_LABEL = f"{CHATBOT} .ssrc__radio-btn-container label"
+# VERIFIED 2026-10-15 (tests/fixtures/naukri/chatbot.html): input.mcc__checkbox,
+# each followed by its label.mcc__label (the option text, for= the input id).
 CHATBOT_CHECKBOX = f"{CHATBOT} input[type='checkbox']"
+CHATBOT_CHECKBOX_LABEL = f"{CHATBOT} label.mcc__label"
+# VERIFIED 2026-10-15 (tests/fixtures/naukri/chatbot.html): div.sendMsg "Save"
+# inside div.send, which has the class "disabled" until an answer is chosen.
 CHATBOT_SEND = f"{CHATBOT} .sendMsg"
 
 # Confirmation that the application went through: Naukri redirects to an

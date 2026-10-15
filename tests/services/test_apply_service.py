@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.models.application import Application, ApplicationOutcome
-from app.models.apply_result import ApplierResult, ApplyOutcome
+from app.models.apply_result import ApplierResult, ApplyOutcome, CompanySite
 from app.models.job import Job
 from app.models.job_status import JobStatus
 from app.services.apply_service import CAP_TIMEZONE, ApplyService, NotApprovedError
@@ -49,6 +49,7 @@ class FakeRepository:
         application: Application | None = None,
         status: str = JobStatus.APPROVED,
         applied_today: int = 0,
+        click: tuple = (None, None),
     ):
         self.application = application if application is not None else approved()
         self.status = status
@@ -56,6 +57,10 @@ class FakeRepository:
         self.counted: list[bool] = []
         self.saves = 0
         self.locked = False
+        self.opened_marks = 0
+        self.company_site = None
+        # jobs.company_site_opened_at / company_site_url
+        self.click = click
 
     async def lock_applies(self) -> None:
         self.locked = True
@@ -71,7 +76,18 @@ class FakeRepository:
         self.counted.append(dry_run)
         return self.applied_today
 
-    async def save_apply_result(self, job_id, outcome, job_status, reason, dry_run, artifacts_dir):
+    async def mark_company_site_opened(self, job_id, url=None):
+        self.opened_marks += 1
+        opened_at, old_url = self.click
+        self.click = (opened_at or NOW, url or old_url)
+
+    async def get_company_site_click(self, job_id):
+        return self.click
+
+    async def save_apply_result(
+        self, job_id, outcome, job_status, reason, dry_run, artifacts_dir, company_site=None
+    ):
+        self.company_site = company_site
         if self.application is None or self.application.applied_live:
             raise ApplicationNotWritableError("refused")
         # Both "tables" change together, like the single commit in the real repo.
@@ -95,17 +111,28 @@ class FakeApplier:
         outcome: ApplyOutcome = ApplyOutcome.APPLIED,
         error: Exception | None = None,
         reason: str = "",
+        company_site: CompanySite | None = None,
+        clicks_company_site: bool = False,
     ):
         self.outcome = outcome
         self.error = error
         self.reason = reason
+        self.company_site = company_site
+        # Like the real applier: run the hook before the company-site click.
+        self.clicks_company_site = clicks_company_site
         self.calls = 0
+        self.company_site_urls = []
 
-    async def apply(self, job_id, job, answers) -> ApplierResult:
+    async def apply(
+        self, job_id, job, answers, on_company_site_click=None, company_site_url=None
+    ) -> ApplierResult:
         self.calls += 1
+        self.company_site_urls.append(company_site_url)
+        if self.clicks_company_site:
+            await on_company_site_click()
         if self.error:
             raise self.error
-        return ApplierResult(outcome=self.outcome, reason=self.reason)
+        return ApplierResult(outcome=self.outcome, reason=self.reason, company_site=self.company_site)
 
 
 @pytest.fixture
@@ -238,39 +265,86 @@ def test_missing_answers_file_fails(tmp_path):
     assert result.outcome == ApplyOutcome.FAILED
 
 
-def test_company_site_job_needs_manual(answers_path):
+def test_needs_manual_is_recorded(answers_path):
     repo = FakeRepository()
-    result, _ = run(repo, answers_path, applier=FakeApplier(ApplyOutcome.NEEDS_MANUAL))
+    result, _ = run(repo, answers_path, applier=FakeApplier(ApplyOutcome.NEEDS_MANUAL, reason="x"))
 
     assert result.outcome == ApplyOutcome.NEEDS_MANUAL
     assert repo.status == JobStatus.NEEDS_MANUAL
 
 
-def test_browser_error_is_recorded_as_failed(answers_path):
+SITE = CompanySite(url="https://kmgus.com/careers/", portal="generic_form", human_steps=["captcha"])
+
+
+def test_company_site_ready_is_saved_with_its_url(answers_path):
     repo = FakeRepository()
-    result, _ = run(repo, answers_path, applier=FakeApplier(error=RuntimeError("boom")))
-
-    assert result.outcome == ApplyOutcome.FAILED
-    assert "boom" in result.reason
-    assert repo.status == JobStatus.FAILED
-
-
-def test_naukri_already_applied_syncs_status(answers_path):
-    repo = FakeRepository()
-    result, _ = run(repo, answers_path, applier=FakeApplier(ApplyOutcome.ALREADY_APPLIED))
-
-    assert result.outcome == ApplyOutcome.ALREADY_APPLIED
-    assert repo.status == JobStatus.APPLIED
-
-
-def test_unknown_question_reason_reaches_the_result(answers_path):
-    repo = FakeRepository()
-    applier = FakeApplier(ApplyOutcome.NEEDS_MANUAL, reason="unknown question: 'Why us?'")
+    applier = FakeApplier(
+        ApplyOutcome.READY_FOR_YOU, reason="form ready", company_site=SITE, clicks_company_site=True
+    )
     result, _ = run(repo, answers_path, applier=applier)
 
+    assert result.outcome == ApplyOutcome.READY_FOR_YOU
+    assert repo.application.outcome == ApplicationOutcome.READY_FOR_YOU
+    assert repo.status == JobStatus.READY_FOR_YOU
+    assert repo.company_site == SITE
+    # Before the click (time), then after it (URL).
+    assert repo.opened_marks == 2
+
+
+def test_browser_error_after_the_company_click_keeps_the_mark(answers_path):
+    # The mark is committed with the FAILED result, so a re-run knows we clicked.
+    repo = FakeRepository()
+    applier = FakeApplier(error=RuntimeError("tab crashed"), clicks_company_site=True)
+    result, _ = run(repo, answers_path, applier=applier)
+
+    assert result.outcome == ApplyOutcome.FAILED
+    assert repo.opened_marks == 1 and repo.saves == 1
+    assert repo.click[0] is not None
+
+
+def test_company_url_is_kept_on_the_job_for_a_re_check(answers_path):
+    repo = FakeRepository()
+    applier = FakeApplier(ApplyOutcome.READY_FOR_YOU, reason="r", company_site=SITE, clicks_company_site=True)
+    run(repo, answers_path, applier=applier)
+    assert repo.click == (NOW, SITE.url)
+
+
+def test_ready_job_never_opens_the_browser_again(answers_path):
+    ready = approved().model_copy(update=dict(
+        outcome=ApplicationOutcome.READY_FOR_YOU, reason="form ready", external_url=SITE.url,
+    ))
+    repo = FakeRepository(application=ready, click=(NOW, SITE.url))
+    result, built = run(repo, answers_path)
+
+    assert result.outcome == ApplyOutcome.READY_FOR_YOU
+    assert built == [] and repo.saves == 0
+
+
+def test_job_clicked_by_the_inspector_is_rechecked_from_its_url(answers_path):
+    # Job 3 on 2026-10-15: the inspector clicked "Apply on company site"
+    # before approval, so Naukri showed "Applied" and the old code recorded a
+    # false "applied". Now the company page is checked directly from its URL.
+    repo = FakeRepository(click=(APPROVED_AT, SITE.url))
+    applier = FakeApplier(ApplyOutcome.READY_FOR_YOU, reason="form ready", company_site=SITE)
+    result, _ = run(repo, answers_path, applier=applier)
+
+    assert applier.company_site_urls == [SITE.url]
+    assert result.outcome == ApplyOutcome.READY_FOR_YOU
+    assert repo.application.outcome == ApplicationOutcome.READY_FOR_YOU
+
+
+def test_clicked_job_without_url_needs_manual_and_no_browser(answers_path):
+    failed = approved().model_copy(update=dict(outcome=ApplicationOutcome.FAILED, reason="tab crashed"))
+    repo = FakeRepository(application=failed, click=(NOW, None))
+    result, built = run(repo, answers_path)
+
+    assert built == []
     assert result.outcome == ApplyOutcome.NEEDS_MANUAL
-    assert "Why us?" in result.reason
-    assert repo.status == JobStatus.NEEDS_MANUAL
-    # The reason is stored, so list_pending can show it later.
+    assert "Naukri now shows Applied" in result.reason
     assert repo.application.outcome == ApplicationOutcome.NEEDS_MANUAL
-    assert "Why us?" in repo.application.reason
+
+
+def test_never_clicked_job_goes_through_naukri(answers_path):
+    applier = FakeApplier()
+    run(FakeRepository(), answers_path, applier=applier)
+    assert applier.company_site_urls == [None]

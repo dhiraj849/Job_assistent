@@ -23,12 +23,20 @@ from app.browser.apply_button import (
     read_apply_buttons,
 )
 from app.browser.apply_questions import Question
+from app.browser.company_site_page import (
+    FrameDocument,
+    follow_company_site_button,
+    open_job_form,
+    open_company_page,
+    read_documents,
+)
 from app.browser.naukri_browser import NaukriBrowser
 from app.browser.naukri_selectors import (
     APPLY_BUTTONS,
     APPLY_SUCCESS,
     CHATBOT_BOT_MESSAGE,
     CHATBOT_CHECKBOX,
+    CHATBOT_CHECKBOX_LABEL,
     CHATBOT_RADIO_LABEL,
     CHATBOT_SEND,
     CHATBOT_TEXT_INPUT,
@@ -61,6 +69,13 @@ class ApplyPage(Protocol):
     async def type_answer(self, text: str) -> None: ...
     async def send_answer(self) -> None: ...
     async def snapshot(self, step: str) -> None: ...
+    # Company site: click "Apply on company site" and switch to that page;
+    # later snapshots show the company page.
+    async def open_company_site(self) -> None: ...
+    # A company page clicked open before: go there directly, no Naukri click.
+    async def open_company_url(self, url: str) -> None: ...
+    async def company_documents(self) -> list[FrameDocument]: ...
+    async def open_company_form(self, selector: str) -> None: ...
 
 
 class NaukriApplyPage:
@@ -73,10 +88,28 @@ class NaukriApplyPage:
         self.steps = 0
         # Bot messages already answered; a higher count means a new question.
         self.seen_messages = 0
+        # The company site's page (often a new tab) once it was opened.
+        self.company_page: Page | None = None
 
     @property
     def page(self) -> Page:
         return self.browser.page
+
+    async def open_company_site(self) -> None:
+        self.company_page = await follow_company_site_button(self.browser.context, self.page)
+
+    async def open_company_url(self, url: str) -> None:
+        await open_company_page(self.page, url)
+        self.company_page = self.page
+
+    async def company_documents(self) -> list[FrameDocument]:
+        return await read_documents(self.company_page)
+
+    async def open_company_form(self, selector: str) -> None:
+        await open_job_form(self.company_page, selector)
+
+    async def open_company_job_page(self, url: str) -> None:
+        await open_company_page(self.company_page, url)
 
     async def open(self, url: str) -> None:
         await self.page.goto(url, wait_until="load")
@@ -118,12 +151,11 @@ class NaukriApplyPage:
         messages = self.page.locator(CHATBOT_BOT_MESSAGE)
         self.seen_messages = await messages.count()
         text = (await messages.last.inner_text()).strip()
-        options = [
-            label.strip()
-            for label in await self.page.locator(CHATBOT_RADIO_LABEL).all_inner_texts()
-            if label.strip()
-        ]
         multi_select = await self.page.locator(CHATBOT_CHECKBOX).count() > 0
+        # A checkbox question lists its options as labels too; they are read
+        # only to show them (map_question never answers a multi-select).
+        labels = CHATBOT_CHECKBOX_LABEL if multi_select else CHATBOT_RADIO_LABEL
+        options = [label.strip() for label in await self.page.locator(labels).all_inner_texts() if label.strip()]
         return Question(text=text, options=options, multi_select=multi_select)
 
     async def choose_option(self, option: str) -> None:
@@ -143,9 +175,10 @@ class NaukriApplyPage:
         """Save HTML + screenshot of this step. Never fails the apply."""
         self.steps += 1
         base = self.artifacts_dir / f"{self.steps:02d}_{step}"
+        page = self.company_page or self.page
         try:
             self.artifacts_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            base.with_suffix(".html").write_text(await self.page.content(), encoding="utf-8")
-            await self.page.screenshot(path=base.with_suffix(".png"), full_page=True)
+            base.with_suffix(".html").write_text(await page.content(), encoding="utf-8")
+            await page.screenshot(path=base.with_suffix(".png"), full_page=True)
         except Exception:
             logger.warning("apply_snapshot_failed", step=step, exc_info=True)

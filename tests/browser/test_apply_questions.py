@@ -68,6 +68,13 @@ def test_location_option():
     assert ask("Your current location", ["Delhi", "Gurgaon"]) is None  # Noida not offered
 
 
+def test_location_inside_a_group_of_cities():
+    # Naukri chatbot, job 7 (2026-10-15).
+    assert ask("What is your current location", ["Noida / Delhi / Gurgaon", "None of above"]) == "Noida / Delhi / Gurgaon"
+    assert ask("What is your current location", ["Noida, Delhi", "Noida / Pune"]) is None  # two fit
+    assert ask("What is your current location", ["Greater Noida / Delhi"]) is None  # another city
+
+
 @pytest.mark.parametrize(
     "text",
     [

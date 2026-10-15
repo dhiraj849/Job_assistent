@@ -1,7 +1,10 @@
 """Apply to one Naukri job in a real browser.
 
 Decisions only; the clicks live in apply_page.NaukriApplyPage. Safety rules:
-- only the on-Naukri "Apply" is clicked; company-site / unknown → NEEDS_MANUAL;
+- the on-Naukri "Apply" is clicked and answered here; unknown → NEEDS_MANUAL;
+- "Apply on company site" is clicked once, the company page is only READ
+  (company_site_check): READY_FOR_YOU if its form can be filled by me with
+  scripts/apply_company_site.py, else NEEDS_MANUAL. Nothing is typed there;
 - every question is answered from answers.yaml by deterministic rules; the
   first question without a sure answer stops the run (NEEDS_MANUAL) before
   anything is typed or sent for it;
@@ -26,6 +29,14 @@ import structlog
 from app.browser.apply_button import ApplyButtonType, classify_apply_button
 from app.browser.apply_page import ApplyPage, NaukriApplyPage, NextStep
 from app.browser.apply_questions import map_question
+from app.browser.company_portal import (
+    HIDDEN_FORM_STOP,
+    application_form,
+    find_job_opener,
+    find_job_page_link,
+    inspect_page,
+)
+from app.browser.company_site_check import company_site_result
 from app.browser.naukri_browser import NaukriBrowser
 from app.browser.session_store import SessionStateError
 from app.config import settings
@@ -55,10 +66,25 @@ class ApplyNotConfirmedError(Exception):
     """We clicked, but the page never confirmed the application."""
 
 
+# Called right before "Apply on company site" is clicked (records the click).
+CompanyClickHook = Callable[[], Awaitable[None]]
+
+
 class JobApplier(Protocol):
-    async def apply(self, job_id: int, job: Job, answers: ApplicationAnswers) -> ApplierResult:
-        """Apply in the browser. Returns APPLIED, NEEDS_MANUAL or ALREADY_APPLIED;
-        raises on unexpected errors."""
+    async def apply(
+        self,
+        job_id: int,
+        job: Job,
+        answers: ApplicationAnswers,
+        on_company_site_click: CompanyClickHook | None = None,
+        company_site_url: str | None = None,
+    ) -> ApplierResult:
+        """Apply in the browser. Returns APPLIED, NEEDS_MANUAL, ALREADY_APPLIED
+        or READY_FOR_YOU; raises on unexpected errors.
+
+        company_site_url: the company page was clicked open before; check it
+        directly and never look at Naukri (it now says "Applied" because of us).
+        """
         ...
 
 
@@ -99,17 +125,32 @@ class NaukriJobApplier:
         self.sleep = sleep
         self.rng = rng or random.Random()
 
-    async def apply(self, job_id: int, job: Job, answers: ApplicationAnswers) -> ApplierResult:
+    async def apply(
+        self,
+        job_id: int,
+        job: Job,
+        answers: ApplicationAnswers,
+        on_company_site_click: CompanyClickHook | None = None,
+        company_site_url: str | None = None,
+    ) -> ApplierResult:
         async with self.open_page(job_id) as page:
             try:
-                return await self._apply_on(page, job_id, job, answers)
+                if company_site_url:
+                    await page.open_company_url(company_site_url)
+                    return await self._read_company_site(page, job_id, job)
+                return await self._apply_on(page, job_id, job, answers, on_company_site_click)
             except Exception:
                 # The last screen is what a human needs to see to fix it.
                 await page.snapshot("error")
                 raise
 
     async def _apply_on(
-        self, page: ApplyPage, job_id: int, job: Job, answers: ApplicationAnswers
+        self,
+        page: ApplyPage,
+        job_id: int,
+        job: Job,
+        answers: ApplicationAnswers,
+        on_company_site_click: CompanyClickHook | None,
     ) -> ApplierResult:
         await page.open(job.url)
         if not await page.is_logged_in():
@@ -121,7 +162,7 @@ class NaukriJobApplier:
         if button == ApplyButtonType.ALREADY_APPLIED:
             return ApplierResult(outcome=ApplyOutcome.ALREADY_APPLIED, reason="Naukri shows already applied")
         if button == ApplyButtonType.COMPANY_SITE:
-            return _manual("apply on the company site")
+            return await self._check_company_site(page, job_id, job, on_company_site_click)
         if button != ApplyButtonType.NAUKRI_APPLY:
             return _manual("no known apply button on the page")
 
@@ -154,6 +195,47 @@ class NaukriJobApplier:
             await page.send_answer()
 
         raise ApplyNotConfirmedError(f"more than {MAX_QUESTIONS} questions; stopped")
+
+    async def _check_company_site(
+        self, page: ApplyPage, job_id: int, job: Job, on_click: CompanyClickHook | None
+    ) -> ApplierResult:
+        # Recorded first: from this click on, Naukri shows the job as Applied.
+        if on_click is not None:
+            await on_click()
+        await self._pause()
+        await page.open_company_site()
+        return await self._read_company_site(page, job_id, job)
+
+    async def _read_company_site(self, page: ApplyPage, job_id: int, job: Job) -> ApplierResult:
+        """Read the open company page (and its form, if hidden) and decide. Never types."""
+        documents = await page.company_documents()
+        await page.snapshot("company_site")
+
+        # A careers list may hide the form behind this job's own "Apply" link.
+        main = inspect_page(documents[0].url, documents[0].html)
+        if HIDDEN_FORM_STOP in main.hard_stops:
+            selector = find_job_opener(documents[0].html, job.title)
+            if selector is not None:
+                await page.open_company_form(selector)
+                documents = await page.company_documents()
+                await page.snapshot("company_form")
+
+        # A careers list without any form may link this job's "Apply" to another page.
+        if not any(application_form(inspect_page(doc.url, doc.html).fields) for doc in documents):
+            link = find_job_page_link(documents[0].html, documents[0].url, job.title)
+            if link is not None:
+                await page.open_company_job_page(link)
+                documents = await page.company_documents()
+                await page.snapshot("company_job_page")
+
+        result = company_site_result(job_id, documents)
+        logger.info(
+            "company_site_checked",
+            job_id=job_id,
+            outcome=result.outcome.value,
+            portal=result.company_site.portal if result.company_site else None,
+        )
+        return result
 
     async def _pause(self) -> None:
         await self.sleep(self.rng.uniform(MIN_PAUSE_S, MAX_PAUSE_S))
