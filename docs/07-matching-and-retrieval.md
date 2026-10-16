@@ -5,31 +5,30 @@ than the next.
 
 ```mermaid
 flowchart TB
-    A["Search cards<br/>(first result page)"] --> B["save_jobs<br/>dedupe by URL"]
-    B --> C["Load unmatched jobs<br/>seen in last 14 days"]
+    A["Search cards<br/>(up to MAX_SEARCH_PAGES pages)"] --> B["save_jobs<br/>dedupe by URL"]
+    B --> C["One JobApplicationWorkflow<br/>per NEW job"]
     C --> D["1 · Keyword filter<br/>JobFilterService"]
-    D --> E["2 · Semantic ranking<br/>fastembed + Qdrant<br/>cosine ≥ 0.7, top N"]
+    D --> DD["Detail page<br/>full JD"]
+    DD --> E["2 · Semantic score<br/>fastembed + Qdrant<br/>cosine ≥ 0.7"]
     E --> F["3 · LLM evaluation<br/>Claude → JobMatchResult"]
-    F --> G["4 · Score 50/30/20<br/>+ level"]
-    G --> H["5 · Rank + save<br/>job_matches"]
+    F --> G["4 · Score 50/30/20<br/>+ level → job_matches"]
+    G --> H["strong / potential → approval<br/>weak → filtered_out"]
 
     classDef built fill:#d4edda,stroke:#2e7d32,color:#000
-    class A,B,C,D,E,F,G,H built
+    class A,B,C,D,DD,E,F,G,H built
 ```
 
-All stages are **Built** and run from `JobMatchingPipeline.run()` (`app/services/job_matching_pipeline.py`).
-`N = MAX_MATCH_JOBS` (default 5).
+All stages are **Built** and run per job inside `JobApplicationWorkflow` activities
+([03](03-workflows.md)). The older batch pipeline (`JobMatchingPipeline`, top `MAX_MATCH_JOBS` per
+run) was removed on 2026-10-16.
 
 ## Stage 0 — Candidate set
 
-`get_unmatched_jobs_with_ids(max_age_days=14)` returns every job with no `job_matches` row and
-`last_seen_at` in the last 14 days — not just this run's new jobs. Consequences:
-
-- Jobs outside the top N are evaluated in later runs (the backlog drains N per run).
-- Jobs rejected by the filter or below the semantic threshold are re-filtered and re-ranked on
-  **every** run until they age out ([known issue](12-roadmap-and-status.md#known-issues)). The
-  filter is cheap; ranking re-uses stored vectors, so the waste is small but grows with volume.
-- Without a database (`job_repository=None`), the pipeline uses this run's jobs in page order.
+Only **new** jobs (first saved by this discovery run) get a workflow. A job that fails a stage ends
+with `jobs.status = filtered_out` and is never re-processed. There is **no top-N cap**: every job
+that passes the filter and the semantic threshold gets an LLM call
+([known issue #12](12-roadmap-and-status.md#known-issues)). Jobs saved before the workflows existed
+can be started by hand with `scripts/start_job_workflow.py`.
 
 ## Stage 1 — Keyword filter
 
@@ -89,8 +88,8 @@ vectors from two models in one collection.
 
 Known limitations:
 
-- `Embedder` and `QdrantClient` are synchronous and called from async code, blocking the event loop
-  (`job_matching_pipeline.py:106`). Planned: `asyncio.to_thread` for embedding and `AsyncQdrantClient`.
+- `Embedder` and `QdrantClient` are synchronous; the `semantic_score` and `embed_job` activities run
+  them in a thread (`asyncio.to_thread`), so the worker's event loop stays free.
 - The 0.7 threshold is unvalidated. `scripts/search_jobs.py` uses 0.07, which suggests the value was
   being explored. Tune on the golden set ([05](05-agent-design.md#evals)).
 - The Qdrant score is logged but not stored. Planned: `job_matches.semantic_score`.
@@ -115,7 +114,8 @@ else `weak`. Saved immediately per job via `save_match` (one commit per job).
 ## Stage 5 — Rank
 
 `JobRankingService.rank` sorts by `(overall_score, skill_match, role_match, experience_match)`
-descending. `main.py` prints title, company, score, level, recommendation.
+descending. Used only by the `app/agent/` prototype; the workflows send each strong / potential job
+to approval on its own, and `scripts/list_pending.py` lists them.
 
 ## Learned answers: related labels
 

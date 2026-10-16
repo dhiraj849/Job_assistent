@@ -8,7 +8,8 @@ approval. Durable workflows run on Temporal. Stack must stay free / self-hosted.
 - Infra: `docker compose up -d` (Postgres :5433, Qdrant :6333, Temporal :7233, UI :8080)
 - Migrations: `uv run alembic upgrade head`
 - Tests: `uv run pytest`
-- Pipeline: `uv run python main.py`
+- Discovery run now: `uv run python main.py` (needs the worker)
+- Discovery schedule: `uv run python -m scripts.schedule_discovery upsert|list|pause|unpause|delete`
 - Worker: `uv run python -m app.workflows.worker`
 - Docs: `uv run mkdocs serve` (http://127.0.0.1:8000)
 

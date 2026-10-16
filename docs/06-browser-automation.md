@@ -384,7 +384,7 @@ never fails the apply. The inspection script writes to `artifacts/inspect/<job_i
 |---|---|---|
 | Search cards never appear | Warning, return `[]` | Same, plus screenshot; distinguish "no results" from "blocked". |
 | One card fails to parse | Warning, skip card | Same, plus counter in `pipeline_runs`. |
-| Browser crash / navigation timeout | Exception propagates, `main.py` aborts | Temporal activity retry (3×, backoff) with heartbeats. |
+| Browser crash / navigation timeout | Activity fails; Temporal retries it (3×, backoff). A later search page timing out keeps the jobs read so far | Same, plus heartbeats. |
 | Session expired | Apply: `SessionExpiredError` ("session expired … run scripts.naukri_login") → `failed` | Notify user. |
 | CAPTCHA / bot challenge | n/a | Non-retryable `Blocked`, pause schedule, notify user. |
 | Apply not confirmed (no question and no "applied" signal within 15 s) | `ApplyNotConfirmedError` → `failed`, never `applied`, never retried (1 attempt) | Same. |

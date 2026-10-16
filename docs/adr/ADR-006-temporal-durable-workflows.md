@@ -1,7 +1,7 @@
 # ADR-006 — Use Temporal for durable workflows
 
 - **Status:** Accepted
-- **Implementation:** Planned (today: in-process `JobMatchingPipeline`)
+- **Implementation:** Built (discovery, application, backfill workflows + discovery Schedule; the in-process `JobMatchingPipeline` was removed 2026-10-16)
 - **Date:** 2026-09-24
 - **Supersedes:** earlier plans to use Celery/ARQ + Redis for background jobs and LangGraph as the orchestrator
 

@@ -29,19 +29,22 @@ flowchart LR
 
 ## 2. Containers — current (Built)
 
-Everything runs in one Python process started by `python main.py`; Postgres and Qdrant run in
-Docker Compose.
+The work runs in the Temporal worker process (`python -m app.workflows.worker`). Runs are started
+by the `discovery-schedule` Temporal Schedule or by a script (`main.py` / `scripts/start_discovery.py`
+start one discovery run). Postgres, Qdrant and Temporal run in Docker Compose.
 
 ```mermaid
 flowchart TB
     subgraph host["Developer machine"]
-        subgraph proc["Python process: main.py"]
-            app["app/ package<br/>pipeline, services, repository"]
+        scripts["scripts/ + main.py<br/>start runs, schedule, approve"]
+        subgraph proc["Python process: Temporal worker"]
+            app["app/workflows + services + repository"]
             pw["Playwright + Chromium<br/>(headed by default)"]
             emb["fastembed<br/>bge-small-en-v1.5 (ONNX, CPU)"]
             sdk["claude-agent-sdk"]
         end
         subgraph compose["docker-compose.yml"]
+            tsrv["Temporal server + UI<br/>:7233 / :8080"]
             pg[("PostgreSQL 16<br/>:5433")]
             qd[("Qdrant v1.18.2<br/>:6333 / :6334")]
         end
@@ -49,20 +52,22 @@ flowchart TB
     naukri["Naukri.com"]
     claude["Claude"]
 
+    scripts -- "start workflow / schedule / signal" --> tsrv
+    tsrv <--> app
     app --> pw --> naukri
     app --> emb
     app -- "SQLAlchemy async / asyncpg" --> pg
-    app -- "qdrant-client (sync HTTP)" --> qd
+    app -- "qdrant-client (sync HTTP, in a thread)" --> qd
     app --> sdk --> claude
 
     classDef built fill:#d4edda,stroke:#2e7d32,color:#000
-    class app,pw,emb,sdk,pg,qd built
+    class scripts,app,pw,emb,sdk,tsrv,pg,qd built
 ```
 
 Also in the repo but outside the main flow:
 
 - `app/agent/` — **In progress**: Claude Agent SDK tool-calling prototype with a CLI approval prompt
-  (`python -m app.agent.agent`). Duplicates part of the pipeline ([known issue](12-roadmap-and-status.md#known-issues)).
+  (`python -m app.agent.agent`). Duplicates part of the workflow logic ([known issue](12-roadmap-and-status.md#known-issues)).
 - `server.py` — an unrelated MCP-server experiment (`create_post` tool). Not part of the product.
 
 ## 3. Containers — target (Planned)
@@ -124,15 +129,13 @@ Key properties of the target:
 
 ```mermaid
 flowchart TB
-    main["main.py<br/>entry point"]
-    container["app/container.py<br/>manual DI factory"]
+    main["main.py / scripts<br/>start workflows"]
+    wfs["app/workflows<br/>workflows + activities + worker"]
     config["app/config.py<br/>Settings (pydantic-settings)"]
     logcfg["app/logging_config.py<br/>structlog"]
 
     subgraph services["app/services — orchestration + domain logic"]
-        pipe["JobMatchingPipeline"]
-        disc["JobDiscoveryService"]
-        filt["JobFilterService<br/>(hardcoded keywords)"]
+        filt["JobFilterService<br/>(profile search: keywords)"]
         ranker["JobRanker<br/>(Qdrant)"]
         match["JobMatchService<br/>(prompt)"]
         score["JobScoreService<br/>50/30/20"]
@@ -174,16 +177,14 @@ flowchart TB
         ag["agent.py + claude_tools.py<br/>approval.py, state.py, steps.py"]
     end
 
-    main --> config & logcfg & prof & container
-    main --> pipe
-    main --> repo
-    container --> pipe
-    pipe --> disc --> js
+    main --> config & prof & wfs
+    wfs --> logcfg
+    wfs --> njs & ndf & ndp
     njs -. implements .-> js
     njs --> nb & ext
     ndf --> nb
-    pipe --> filt & ranker & match & score & level & rank
-    pipe --> repo --> models --> dbconn
+    wfs --> filt & ranker & match & score & level
+    wfs --> repo --> models --> dbconn
     ranker --> embd & store & texts
     match --> ccp
     ag --> njs
@@ -191,7 +192,7 @@ flowchart TB
 
     classDef built fill:#d4edda,stroke:#2e7d32,color:#000
     classDef wip fill:#fff3cd,stroke:#b8860b,color:#000
-    class main,container,config,logcfg,pipe,disc,filt,ranker,match,score,level,rank,prof,js,njs,ext,nb,ndf,ndp,ccp,embd,store,texts,repo,models,dbconn,dto built
+    class main,wfs,config,logcfg,filt,ranker,match,score,level,rank,prof,js,njs,ext,nb,ndf,ndp,ccp,embd,store,texts,repo,models,dbconn,dto built
     class ag wip
 ```
 
@@ -199,8 +200,8 @@ flowchart TB
 
 | Layer | Package | Responsibility | Status |
 |---|---|---|---|
-| Entry / composition | `main.py`, `app/container.py` | Load settings + profile, wire dependencies, print result | Built |
-| Orchestration | `app/services/job_matching_pipeline.py` | Run the steps in order | Built (to be replaced by Temporal workflows) |
+| Entry | `main.py`, `scripts/` | Start a discovery run, manage the schedule, approve / inspect | Built |
+| Orchestration | `app/workflows/` | Temporal workflows run the steps; activities build the services | Built (see Workflows row) |
 | Domain services | `app/services/*` | Filtering, scoring, levelling, ranking, prompt building | Built |
 | Sources / browser | `app/job_sources/`, `app/browser/` | Get jobs from Naukri | Built (search cards; detail pages via the `fetch_job_details` activity on the `job-agent-browser` queue) |
 | LLM | `app/llm/` | Call Claude and validate JSON | Built (no abstraction yet) |
@@ -243,10 +244,10 @@ sequenceDiagram
 
 | Concern | Current | Target |
 |---|---|---|
-| Trigger | Temporal Schedule `discovery-schedule` → `JobDiscoveryWorkflow` (`scripts/schedule_discovery.py`), or manual `scripts/start_discovery.py`; legacy `python main.py` | Same |
-| Orchestration | `JobMatchingPipeline.run()` in-process | Temporal workflows + activities |
-| Job detail | Workflow path: detail page read after the filter (`jobs.description_full`, `jobs.details`); `main.py` path: snippet unless details were already stored; older jobs: `scripts/backfill_details.py` | Same |
-| Job state | Implicit (row in `jobs` / row in `job_matches`) | Explicit lifecycle state machine ([03](03-workflows.md#job-lifecycle-state-machine)) |
+| Trigger | Temporal Schedule `discovery-schedule` → `JobDiscoveryWorkflow` (`scripts/schedule_discovery.py`), or manual `main.py` / `scripts/start_discovery.py` | Same, plus API "run now" |
+| Orchestration | Temporal workflows + activities (the in-process `JobMatchingPipeline` was removed 2026-10-16) | Same |
+| Job detail | Workflow path: detail page read after the filter (`jobs.description_full`, `jobs.details`); older jobs: `scripts/backfill_details.py` | Same |
+| Job state | `jobs.status` lifecycle, set by the workflows | Explicit lifecycle state machine ([03](03-workflows.md#job-lifecycle-state-machine)) |
 | LLM | `ClaudeCodeProvider` called directly, sequential | `LLMProvider` interface, timeouts, retries, bounded concurrency |
 | Approval | CLI `input()` in prototype | Signal from dashboard/API with timeout |
 | Apply | Not implemented | `submit_application` activity, dry-run first |

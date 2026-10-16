@@ -98,8 +98,8 @@ Ollama fallback keeps data fully local.
 |---|---|---|
 | Passwords, tokens, API keys, `SecretStr` values, full DB URLs | Credential leak | OK |
 | `storage_state` contents, cookies, auth headers | Account takeover | OK (`session_store` logs counts/domains only; tested) |
-| Candidate name, email, phone, address | PII | **Violated**: `profile_loaded` logs `name=candidate.name` (`main.py:23`, `app/agent/agent.py:29-33`) |
-| Full prompts or full LLM responses at INFO or above | Contain profile PII | OK in `main.py`; `app/agent/agent.py:80` logs every SDK message at DEBUG — keep DEBUG off in shared logs |
+| Candidate name, email, phone, address | PII | **Violated**: `profile_loaded` logs `name=candidate.name` (`app/agent/agent.py:29-33`; the `main.py` one went with the pipeline) |
+| Full prompts or full LLM responses at INFO or above | Contain profile PII | OK in the workflows; `app/agent/agent.py:80` logs every SDK message at DEBUG — keep DEBUG off in shared logs |
 | Resume text, form field values | PII | n/a yet |
 
 Allowed: job IDs, job titles/companies (public), counts, durations, scores, error types, workflow IDs.

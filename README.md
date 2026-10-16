@@ -6,35 +6,34 @@ A self-hosted assistant that discovers jobs on **Naukri**, evaluates them agains
 It is a learning project built to production standards. Everything is free / open-source /
 self-hosted; the only paid dependency is an existing Claude subscription.
 
-> **Status:** discovery, storage, semantic ranking and LLM scoring work today via `main.py`.
-> Durable workflows, the approval flow, applying, a dashboard and observability are planned.
+> **Status:** Temporal workflows run discovery (paginated, scheduled twice a day), detail pages,
+> filtering, semantic scoring, Claude evaluation, my approval and apply (dry-run by default; company
+> sites are finished by hand). A dashboard and observability are planned.
 > See [docs/12-roadmap-and-status.md](docs/12-roadmap-and-status.md).
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    P["profile.yaml"] --> M
-    subgraph M["main.py — JobMatchingPipeline [Built]"]
-        direction LR
-        S["Naukri search<br/>Playwright"] --> DB[("PostgreSQL<br/>jobs")]
-        DB --> F["Keyword filter"]
-        F --> Q["Semantic rank<br/>fastembed + Qdrant"]
-        Q --> L["Claude evaluation<br/>JSON schema"]
-        L --> SC["Score 50/30/20<br/>+ level"]
-        SC --> DB2[("PostgreSQL<br/>job_matches")]
+    T["Temporal Schedule<br/>or main.py"] --> D
+    subgraph D["JobDiscoveryWorkflow [Built]"]
+        S["Naukri search<br/>Playwright, up to 3 pages"] --> DB[("PostgreSQL<br/>jobs")]
     end
-    M --> R["Ranked list<br/>(terminal)"]
-    R -.-> A["Approve / reject<br/>[Planned]"]
-    A -.-> AP["Apply via Playwright<br/>[Planned]"]
+    D --> W
+    subgraph W["JobApplicationWorkflow per new job [Built]"]
+        direction LR
+        F["Keyword filter<br/>profile search:"] --> DP["Detail page<br/>full JD"]
+        DP --> Q["Semantic score<br/>fastembed + Qdrant"]
+        Q --> L["Claude evaluation<br/>+ score 50/30/20"]
+        L --> A["My approval<br/>(signal)"]
+        A --> AP["Apply<br/>dry-run by default"]
+    end
 
     classDef built fill:#d4edda,stroke:#2e7d32,color:#000
-    classDef planned fill:#eeeeee,stroke:#888,stroke-dasharray:5 5,color:#000
-    class S,DB,F,Q,L,SC,DB2,R built
-    class A,AP planned
+    class T,S,DB,F,DP,Q,L,A,AP built
 ```
 
-Target architecture (Temporal workflows, FastAPI, Next.js dashboard, MinIO, OpenTelemetry) is in
+Target architecture (FastAPI, Next.js dashboard, MinIO, OpenTelemetry) is in
 [docs/02-architecture.md](docs/02-architecture.md).
 
 ## Quick start
@@ -44,16 +43,18 @@ Code logged in with your Claude subscription.
 
 ```bash
 uv sync
-uv pip install claude-agent-sdk mcp      # temporary: not yet declared in pyproject.toml
 uv run playwright install chromium
 
 cp .env.example .env                      # then add POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
 cp profile.example.yaml profile.yaml      # then fill in your profile (gitignored)
 
-docker compose up -d                      # PostgreSQL :5433, Qdrant :6333
+docker compose up -d                      # PostgreSQL :5433, Qdrant :6333, Temporal :7233 / UI :8080
 uv run alembic upgrade head
 
-uv run python main.py                     # search → store → filter → rank → evaluate → print
+uv run python -m app.workflows.worker     # keep running (second terminal)
+uv run python main.py                     # one discovery run now
+uv run python -m scripts.schedule_discovery upsert   # or: twice a day (09:00 + 18:00 IST)
+uv run python -m scripts.list_pending     # jobs waiting for my approval
 uv run pytest                             # unit tests
 ```
 

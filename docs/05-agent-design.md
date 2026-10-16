@@ -4,8 +4,8 @@
 
 | Component | Where | Status | Role |
 |---|---|---|---|
-| **Job matcher** | `app/services/job_match_service.py`, `app/llm/claude_code.py` | Built | One structured-output call per job → `JobMatchResult`. Used by `main.py`. |
-| **Tool-calling agent** | `app/agent/` | In progress (prototype) | Claude Agent SDK loop with two tools; CLI approval. Not used by `main.py`. |
+| **Job matcher** | `app/services/job_match_service.py`, `app/llm/claude_code.py` | Built | One structured-output call per job → `JobMatchResult`. Used by the `match_job` activity. |
+| **Tool-calling agent** | `app/agent/` | In progress (prototype) | Claude Agent SDK loop with two tools; CLI approval. Not used by the workflows. |
 
 Design principle: **the LLM judges, the code decides.** The LLM returns sub-scores and reasons;
 code computes the overall score, the level, the ranking, and whether anything is submitted.
@@ -51,7 +51,7 @@ The prompt (`build_prompt` in `app/services/job_match_service.py`) embeds:
 ```
 
 (Simplified from Pydantic's generated schema.) Out-of-range scores raise `ValidationError`; the
-pipeline logs `matching_failed` and skips the job (`job_matching_pipeline.py:145`).
+`match_job` activity fails and Temporal retries it (3 attempts), then the workflow fails for that job.
 
 ### Deterministic scoring (Built)
 

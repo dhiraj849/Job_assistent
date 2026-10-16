@@ -1,83 +1,20 @@
+"""Start one discovery run now (search -> save -> one application workflow per new job).
+
+The old in-process pipeline is gone: Temporal workflows do the whole flow,
+respect jobs.status and wait for my approval. Needs infra + a running worker:
+  docker compose up -d
+  uv run python -m app.workflows.worker
+
+Usage: uv run python main.py   (same as scripts/start_discovery.py with the profile's search)
+Scheduled runs: scripts/schedule_discovery.py
+"""
+
 import asyncio
 
-import structlog
-
 from app.config import settings
-from app.container import create_job_matching_pipeline
-from app.logging_config import setup_logging
 from app.services.profile_loader import load_profile
-from app.db.database import SessionLocal, engine
-from app.db.job_repository import JobRepository
-# from app.db.job_repository import JobRepository
-
-logger = structlog.get_logger(__name__)
-
-
-async def main():
-    setup_logging(settings.LOG_LEVEL, settings.LOG_FORMAT)
-    # --------------------------------------------------
-    # Candidate Profile
-    # --------------------------------------------------
-
-    candidate = load_profile(settings.PROFILE_PATH)
-    logger.info("profile_loaded", name=candidate.name, skills=len(candidate.skills))
-    # --------------------------------------------------
-    # Create Job Matching Pipeline
-    # --------------------------------------------------
-
-    pipeline = create_job_matching_pipeline(candidate.search)
-
-    # --------------------------------------------------
-    # Run Pipeline
-    # --------------------------------------------------
-
-    async with SessionLocal() as session:
-        ranked_jobs = await pipeline.run(
-            candidate=candidate,
-            max_match_jobs=settings.MAX_MATCH_JOBS,
-            job_repository=JobRepository(session),
-        )
-
-    await engine.dispose()
-    if not ranked_jobs:
-        print("\nNo matching jobs found. Try a different keyword or location.")
-        return
-    # --------------------------------------------------
-    # Display Final Ranking
-    # --------------------------------------------------
-
-    print("\n===== FINAL RANKING =====")
-
-    for i, item in enumerate(
-        ranked_jobs,
-        start=1
-    ):
-
-        print(
-            f"\n{i}. {item.job.title}"
-        )
-
-        print(
-            f"   Company: "
-            f"{item.job.company}"
-        )
-
-        print(
-            f"   Overall Score: "
-            f"{item.overall_score}"
-        )
-
-        print(
-            f"   Match Level: "
-            f"{item.match_level}"
-        )
-
-        print(
-            f"   Recommendation: "
-            f"{item.match.recommendation}"
-        )
-
+from scripts.start_discovery import main as start_discovery
 
 if __name__ == "__main__":
-
-    asyncio.run(main())
+    search = load_profile(settings.PROFILE_PATH).search
+    asyncio.run(start_discovery(search.keyword, search.location))

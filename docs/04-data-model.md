@@ -83,8 +83,8 @@ Notes on current behaviour:
 - `JobRepository.save_jobs` inserts new URLs and updates `last_seen_at` for known URLs, in one commit
   (`app/db/job_repository.py:19`). Jobs without a URL are skipped with a warning.
 - "Unmatched" = no `job_matches` row and `last_seen_at` within 14 days (`get_unmatched_jobs_with_ids`).
-  `main.py` still uses this query and ignores `jobs.status`, so jobs it filtered out or ranked below
-  threshold are loaded again on every run ([known issue](12-roadmap-and-status.md#known-issues)).
+  Only `scripts/check_unmatched.py` uses it now (the `main.py` pipeline that re-processed these jobs
+  was removed 2026-10-16); the workflows follow `jobs.status` instead.
 - `jobs.status` is a plain `String(30)`, not a DB enum, so adding a value needs no migration. Allowed
   values live in one place: `JobStatus` (`app/models/job_status.py`): `discovered`, `filtered_out`,
   `shortlisted`, `matched`, `awaiting_approval`, `approved`, `rejected`, `expired`,

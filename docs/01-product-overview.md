@@ -9,7 +9,7 @@ tracking lives in the candidate's head.
 
 ## What the system does
 
-1. **Discover** — search Naukri on a schedule with Playwright. *(Built: one-shot search via `main.py`.)*
+1. **Discover** — search Naukri on a schedule with Playwright. *(Built: Temporal Schedule `discovery-schedule`, or one run now via `main.py`.)*
 2. **Remember** — store every job in PostgreSQL, deduplicated by URL. *(Built.)*
 3. **Evaluate** — keyword filter → semantic ranking → LLM evaluation → deterministic score. *(Built.)*
 4. **Prepare** — assemble what the application needs (answers, resume variant). *(Planned.)*

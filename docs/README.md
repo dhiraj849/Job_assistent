@@ -2,10 +2,11 @@
 
 AI Job Agent is a self-hosted assistant that discovers jobs on Naukri, evaluates each one against a
 candidate profile, prepares the application, and applies **only after explicit human approval**.
-Today it runs as a single Python process (`main.py`) that scrapes Naukri search results with
-Playwright, stores jobs in PostgreSQL, ranks them semantically with Qdrant + fastembed, scores the
-top candidates with Claude (via the Claude Agent SDK) and prints a ranked list. Durable workflows
-(Temporal), the approval flow, the apply step, a dashboard and observability are planned. Everything
+Today Temporal workflows (worker: `python -m app.workflows.worker`, started by a Temporal Schedule or
+`main.py`) scrape Naukri with Playwright, store jobs in PostgreSQL, read each new job's detail page,
+filter it, score it semantically with Qdrant + fastembed, evaluate it with Claude (via the Claude
+Agent SDK) and wait for my approval before applying (dry-run by default). A dashboard and
+observability are planned. Everything
 is free / open-source / self-hosted; the only paid dependency is an existing Claude subscription.
 
 ## Status legend
@@ -14,7 +15,7 @@ Used in every document and diagram.
 
 | Marker | Meaning |
 |---|---|
-| **Built** | Exists in the code on `main` and is used by `main.py` or a script. |
+| **Built** | Exists in the code on `main` and is used by the workflows or a script. |
 | **In progress** | Partial code exists (prototype, unused config, or not wired into the main flow). |
 | **Planned** | Decided or proposed; no code yet. |
 

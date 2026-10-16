@@ -1,6 +1,6 @@
 # 12 — Roadmap and status
 
-Verified against commit `5c4f3c2` plus the patch-removal step 1 on `chore/leftovers-typing-roadmap-patches` (2026-10-15). Update this file in the same PR that changes a feature's status.
+Verified against branch `feat/phase-1-discovery` (Phase 1 tasks 1–6, 2026-10-16; `uv run pytest`: 370 passed). Update this file in the same PR that changes a feature's status.
 
 ## Feature status
 
@@ -8,7 +8,7 @@ Verified against commit `5c4f3c2` plus the patch-removal step 1 on `chore/leftov
 |---|---|---|---|
 | Config | Typed settings from `.env` | Built | `app/config.py` |
 | Config | Candidate profile from YAML | Built | `app/services/profile_loader.py`, `profile.example.yaml` |
-| Discovery | Naukri search (first results page) via Playwright | Built | `app/job_sources/naukri.py`, `app/browser/naukri_browser.py` |
+| Discovery | Naukri search via Playwright (paginated, see Pagination row) | Built | `app/job_sources/naukri.py`, `app/browser/naukri_browser.py` |
 | Discovery | Card extraction (title, company, location, exp, snippet, skills, URL) | Built | `app/job_sources/naukri_extractor.py` |
 | Discovery | Pagination (follow "Next" href, up to `MAX_SEARCH_PAGES`, delay + jitter, stop on no new cards / no next page) | Built (live 2026-10-16: 3 pages, 59 unique jobs, 45 s) | `app/job_sources/naukri.py`, `naukri_browser.next_page_url`, `naukri_selectors.SEARCH_NEXT_PAGE`, `tests/browser/test_search_pagination.py`, `tests/job_sources/test_naukri_source_pagination.py`, `tests/fixtures/naukri/search_page_*.html` |
 | Discovery | Detail-page scraping (full JD + details: JSON-LD, DOM fallback; one page at a time on `job-agent-browser`, `DETAIL_PAGE_DELAY_SECONDS`; patch `fetch-details-v1`) | Built (live fetch via worker verified 2026-10-08: 4/4 new jobs, no snippet fallback) | `app/job_sources/naukri_detail.py`, `naukri_detail_parser.py`, `activities.fetch_job_details`, migration `b50143f8cf9c`, `tests/job_sources/` |
@@ -68,6 +68,7 @@ Verified against commit `5c4f3c2` plus the patch-removal step 1 on `chore/leftov
 | Workflows | Temporal `JobApplicationWorkflow` (filter → semantic score → LLM match → approval → apply with safety rails) | Built | `app/workflows/job_application_workflow.py`, `scripts/start_job_workflow.py` |
 | Workflows | `jobs.status` lifecycle (`JobStatus`) + Pydantic data converter | Built | `app/models/job_status.py`, migration `b5d33dd745b3`, `app/workflows/client.py` |
 | Workflows | Temporal Schedule for discovery (`discovery-schedule`, 09:00 + 18:00 IST, 15 min jitter, overlap SKIP, idempotent `upsert`, pause / unpause / trigger / list / delete) | Built (2026-10-16; checked live with a paused throw-away schedule. A pre-existing `discovery-schedule` for "Python Developer" / Delhi, created 2026-10-08 outside the repo, was left as is) | `scripts/schedule_discovery.py`, `app/workflows/ids.py`, `tests/scripts/test_schedule_discovery.py` |
+| Workflows | Retire the `main.py` pipeline (`JobMatchingPipeline`, `app/container.py`, `JobDiscoveryService`, `MAX_MATCH_JOBS`); `main.py` starts one discovery run | Built (2026-10-16; issues #4, #5, #8 closed) | `main.py`, `CLAUDE.md`, `README.md` |
 | API / UI | FastAPI, Next.js dashboard | Planned | — |
 | Observability | structlog console/JSON | Built | `app/logging_config.py` |
 | Observability | OpenTelemetry, Grafana stack, Langfuse | Planned | — |
@@ -83,8 +84,8 @@ Proposed; adjust as priorities change.
 
 | Phase | Goal | Scope | Exit criteria |
 |---|---|---|---|
-| **0 — Foundations & cleanup** | Safe, reproducible repo | Rotate + remove leaked secrets; ~~declare `claude-agent-sdk`~~ (done); complete `.env.example`; stop logging `name`; remove X settings; decide on `server.py`; fix return type; `__main__` guards in scripts; ruff + mypy + CI (unit) + gitleaks | Fresh clone → `uv sync --locked` → `main.py` works; CI green |
-| **1 — Discovery quality** | Better input data | Detail-page scraping with delays; `jobs.status` + lifecycle; profile-driven filter keywords and role focus; pagination; re-embed on details; selector fixtures + tests | No job re-processed after a terminal state; JD length ≫ snippet |
+| **0 — Foundations & cleanup** | Safe, reproducible repo | Rotate + remove leaked secrets; ~~declare `claude-agent-sdk`~~ (done); complete `.env.example`; stop logging `name`; remove X settings; decide on `server.py`; fix return type; `__main__` guards in scripts; ruff + mypy + CI (unit) + gitleaks | Fresh clone → `uv sync --locked` → `main.py` starts a discovery run; CI green |
+| **1 — Discovery quality** | Better input data | Detail-page scraping with delays + jitter; `jobs.status` + lifecycle; profile-driven filter keywords and role focus; pagination; detail backfill + re-embed; discovery Schedule; retire `main.py` pipeline; selector fixtures + tests | No job re-processed after a terminal state; JD length ≫ snippet. **Done 2026-10-16** on `feat/phase-1-discovery` (6 commits; `uv run pytest`: 370 passed, up from 329): only workflows process jobs and they follow `jobs.status`; full JD for new jobs, backfill for old ones (live run pending). Open: #12 (no LLM budget), live backfill, existing `discovery-schedule` (Delhi) vs profile search |
 | **2 — Matching hardening** | Reliable, measurable LLM step | `LLMProvider` + Ollama fallback; timeout/retry; bounded concurrency; async embedding/Qdrant; prompt files + versioning; golden-set evals; PII-minimised prompt; remove `app/agent/` duplication | Eval report per prompt version; no event-loop blocking |
 | **3 — Durable workflows + approval** | Temporal in place | Temporal in Compose; discovery + application workflows; approval signal + timeout; `applications`, `pipeline_runs` tables; minimal FastAPI (list matches, approve/reject) | Kill worker mid-run → run resumes; no submit path without approval (tested) |
 | **4 — Apply (dry-run first)** | Prepared applications | `storage_state` login script + encryption; apply flow; screenshots to MinIO; dry-run default; daily caps | 10 dry-run applications reviewed manually; then live behind config flag |
@@ -100,15 +101,15 @@ All verified in code unless marked otherwise.
 | 1 | **Secrets in comments in `server.py`, committed and pushed** | `server.py:21-26`; commit `39612aa` is on `origin/main` | Credentials compromised | Rotate all, delete lines, gitleaks ([10](10-security.md#open-incident-secrets-committed-to-git)) (0) |
 | 2 | ~~`claude-agent-sdk` and `mcp` imported but not declared~~ **Fixed** | Both now in `pyproject.toml` and `uv.lock` | — | Done (0) |
 | 3 | ~~Job description is only the search-card snippet~~ **Fixed** | `fetch_job_details` reads the detail page before semantic score + LLM; older jobs: `scripts/backfill_details.py` (`BackfillDetailsWorkflow`: fetch + re-embed, no LLM). Built 2026-10-16; dry run lists 37 jobs, live backfill not run yet | — | Done (1) |
-| 4 | `main.py` ignores `jobs.status` → rejected jobs reprocessed every run | `get_unmatched_jobs_with_ids` selects all jobs without a match; only the Temporal workflows set `jobs.status` | `main.py` path: filtered-out / below-threshold jobs re-filtered and re-ranked for 14 days | Retire `main.py` pipeline in favour of the workflows (1) |
-| 5 | Blocking embedding and sync Qdrant calls inside async code (`main.py` path; the `semantic_score` activity already uses `asyncio.to_thread`) | `self.ranker.rank(...)` called without `await`/thread in `job_matching_pipeline.py:106`; `Embedder` (fastembed) and `QdrantClient` are sync | Event loop blocked during ranking | `asyncio.to_thread` + `AsyncQdrantClient` (2) |
+| 4 | ~~`main.py` ignores `jobs.status` → rejected jobs reprocessed every run~~ **Fixed** | 2026-10-16: `JobMatchingPipeline`, `app/container.py`, `JobDiscoveryService` and `MAX_MATCH_JOBS` removed; `main.py` only starts one `JobDiscoveryWorkflow`. Only the workflows process jobs, and a job in a terminal state is never re-processed | — | Done (1) |
+| 5 | ~~Blocking embedding and sync Qdrant calls inside async code~~ **Resolved** (path removed) | Lived only in the removed pipeline; `semantic_score` and `embed_job` run fastembed + the sync `QdrantClient` in `asyncio.to_thread`. `AsyncQdrantClient` stays optional (Phase 2) | — | Done (1) |
 | 6 | `job_matches.job_id` unique → single-user only | `app/db/models.py:38`, migration `6fc31f68061a:40` | Can't store matches for a second user or a new prompt version | Composite unique key (6; prompt part in 2) |
 | 7 | ~~Filter keywords and prompt role focus hardcoded~~ **Fixed** | Lists, role focus and default keyword/location now come from the profile's `search:` section (`SearchConfig`); `JOB_SEARCH_KEYWORD` / `JOB_SEARCH_LOCATION` settings removed | — | Done (1) |
-| 8 | LLM calls sequential, no timeout / retry (`main.py` path; the `match_job` activity has 2 min timeout, 3 attempts, max 3 parallel activities) | `job_matching_pipeline.py:124-150`, `claude_code.py:17-25` | Slow runs; a hung call hangs the run | Timeout, retry, `asyncio.Semaphore` (2) |
+| 8 | ~~LLM calls sequential, no timeout / retry~~ **Resolved** (path removed) | Lived only in the removed pipeline. The `match_job` activity has a 2 min timeout, 3 attempts, max 3 parallel activities per worker; `claude_code.py` itself still has no timeout (the activity timeout covers it) | — | Done (1) |
 | 9 | Wrong return type hint in `ClaudeCodeProvider` | `claude_code.py:13` says `-> str`, returns `JobMatchResult` (`:29`) | Misleading; type checker would flag | Fix hint / introduce `LLMProvider` (0) |
-| 10 | Duplicate flows: `app/agent/` vs `JobMatchingPipeline` | `app/agent/steps.py` re-implements search/filter/score/level/rank, with demo data | Two sources of truth for the same logic | Keep one path; agent → tool use inside activities (2) |
+| 10 | Duplicate flows: `app/agent/` vs the workflows | `app/agent/steps.py` re-implements search/filter/score/level/rank, with demo data | Two sources of truth for the same logic | Keep one path; agent → tool use inside activities (2) |
 | 11 | New jobs can miss their application workflow | `save_jobs` activity commits, then returns ids; if it fails in between, the retry sees the jobs as already seen | Those jobs stay `discovered` with no workflow | Start manually with `scripts/start_job_workflow.py`; later: return ids of the batch still `discovered` (3) |
-| 12 | Every new job that passes filter + semantic threshold gets an LLM call | `JobApplicationWorkflow` has no top-N / daily budget (unlike `MAX_MATCH_JOBS` in `main.py`) | More LLM usage per discovery run | Daily LLM budget (2) |
+| 12 | Every new job that passes filter + semantic threshold gets an LLM call | `JobApplicationWorkflow` has no top-N / daily budget (`MAX_MATCH_JOBS` went with the `main.py` pipeline); pagination (up to 3 pages) means more new jobs per run | More LLM usage per discovery run | Daily LLM budget (2) |
 | 13 | ~~Decision note is not persisted~~ **Fixed** | `record_approval` stores note + time in `applications` + `job_decisions`; `record_decision` stores rejections / expiries in `job_decisions` | — | Done (3) |
 | 14 | ~~A re-run workflow for an applied job rewrites `jobs.status` and repeats the LLM match~~ **Fixed** | Workflow checks `is_applied_live` first and returns `applied` (patch `skip-if-applied-v1`); `_set_job_status` refuses any status but `applied` for a live-applied job | — | Done (3) |
 | 15 | ~~Daily-cap expiry leaves the `applications` row `pending`~~ **Fixed** | `_apply` runs `expire_approval` after `MAX_CAP_WAIT_DAYS` (patch `cap-expiry-outcome-v1`): `applications.outcome` `pending` → `expired` + reason + `jobs.status`, one commit; new outcome via migration `a7664589ce5e`. No backfill (0 affected rows) | — | Done (3) |
@@ -124,7 +125,7 @@ All verified in code unless marked otherwise.
 
 | Item | Evidence |
 |---|---|
-| Candidate name logged (PII) | `main.py:23`, `app/agent/agent.py:29-33` |
+| Candidate name logged (PII) | `app/agent/agent.py:29-33` |
 | Full profile incl. name sent to LLM | `job_match_service.build_prompt` (`model_dump(exclude={"search"})`) |
 | X API settings left over from MCP experiment | `app/config.py:48-51` |
 | `.env.example` lacks `POSTGRES_*`, which Compose requires | `.env.example`, `docker-compose.yml:6-8` |
@@ -132,7 +133,7 @@ All verified in code unless marked otherwise.
 | Scripts run on import (no `if __name__ == "__main__"`) | `scripts/search_jobs.py:34`, `scripts/embedding_demo.py` |
 | Semantic threshold inconsistent (0.7 vs 0.07) and untuned | `job_ranker.py:10`, `scripts/search_jobs.py:25` |
 | `JobMatchService` constructs its LLM provider (no injection) | `job_match_service.py:11` |
-| Filter's `matched_keywords` computed then discarded | `job_matching_pipeline.py:95` |
+| Filter's `matched_keywords` computed then discarded | `activities.filter_job` returns only a bool |
 | Agent tool ignores `BROWSER_HEADLESS` / timeout settings | `app/agent/claude_tools.py:38` |
 | Imports in the middle of `app/agent/steps.py` | `steps.py:18,39,55,99,115,130` |
 | No async tests; no coverage tool; no linter/type checker configured | `pyproject.toml` |

@@ -5,40 +5,8 @@
 > **dry-run by default**) — see [Discovery workflow](#discovery-workflow-built) and
 > [Application workflow](#application-workflow-built-dry-run).
 > Sections from [Target workflows](#target-workflows) on are the remaining design.
-> [Current flow](#current-flow-built) describes the older all-in-one pipeline in `main.py`.
-
-## Current flow (Built)
-
-`main.py` → `JobMatchingPipeline.run()` (`app/services/job_matching_pipeline.py:38`), one process,
-no retries, no persistence of intermediate state beyond `jobs` and `job_matches`.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant M as main.py
-    participant P as JobMatchingPipeline
-    participant N as NaukriJobSource (Playwright)
-    participant R as JobRepository (Postgres)
-    participant F as JobFilterService
-    participant K as JobRanker (fastembed + Qdrant)
-    participant L as JobMatchService (Claude)
-    M->>P: run(candidate, max_match_jobs)
-    P->>N: get_jobs()
-    N-->>P: jobs from search cards
-    P->>R: save_jobs(jobs) (dedupe by url)
-    P->>R: get_unmatched_jobs_with_ids(14 days)
-    R-->>P: [(id, job)]
-    P->>F: filter_jobs(jobs)
-    P->>K: rank(candidate, jobs_with_ids, limit=N)
-    K-->>P: top N with cosine ≥ 0.7
-    loop each selected job (sequential)
-        P->>L: match(candidate, job)
-        L-->>P: JobMatchResult (JSON)
-        P->>P: score 50/30/20, classify level
-        P->>R: save_match(job_id, ...)
-    end
-    P-->>M: ranked JobMatchItems (printed)
-```
+> The older all-in-one `main.py` pipeline (`JobMatchingPipeline`) was removed on 2026-10-16;
+> `main.py` now only starts one discovery run.
 
 ## Discovery workflow (Built)
 
@@ -444,7 +412,7 @@ stateDiagram-v2
 |---|---|---|---|
 | `discovered` | Row in `jobs` from a search card | `jobs.status` | Yes (default) |
 | `details_fetched` | Detail page scraped, full description saved | `jobs.status` | No |
-| `filtered_out` | Failed keyword filter, semantic threshold, or `weak` LLM level | `jobs.status` | Yes (workflow path; `main.py` still re-processes) |
+| `filtered_out` | Failed keyword filter, semantic threshold, or `weak` LLM level | `jobs.status` | Yes |
 | `shortlisted` | Selected for LLM evaluation | `jobs.status` | Yes (workflow path) |
 | `matched` | LLM result + score saved | `jobs.status` + `job_matches` row | Yes (workflow path; migration backfilled old matches) |
 | `awaiting_approval` | Application workflow waiting for signal | `jobs.status` | Yes |

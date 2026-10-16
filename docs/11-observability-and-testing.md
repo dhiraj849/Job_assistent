@@ -13,14 +13,13 @@
 
 | Event | Level | Logger / file | Fields |
 |---|---|---|---|
-| `profile_loaded` | info | `main.py`, `app/agent/agent.py` | `name` ⚠ PII, `skills` (count) |
+| `profile_loaded` | info | `app/agent/agent.py` | `name` ⚠ PII, `skills` (count) |
 | `search_started` | info | `app/job_sources/naukri.py` | `keyword`, `location` |
 | `no_job_cards_found` | warning | naukri.py | `timeout_ms`, `url` |
 | `job_cards_found` | info | naukri.py | `count`, `search_duration_ms` |
 | `job_extracted` | debug | naukri.py | `index`, `total`, `title`, `experience`, `skills` |
 | `job_extraction_failed` | warning | naukri.py | `index`, `total`, `exc_info` |
 | `jobs_extracted` | info | naukri.py | `count` |
-| `jobs_discovered` | info | `job_matching_pipeline.py` | `count` |
 | `job_without_url_skipped` | warning | `job_repository.py` | `title` |
 | `jobs_saved` | info | job_repository.py | `received`, `unique`, `new`, `already_seen` |
 | `unmatched_jobs_loaded` | info | job_repository.py | `count`, `max_age_days` |
@@ -37,7 +36,7 @@
 | `job_not_selected` | info | agent.py | — |
 
 Gaps: no run ID tying a run's events together, no LLM latency/token fields, no durations for
-filter/rank stages, `print()` used for final output in `main.py`.
+filter/rank stages.
 
 ## Target observability (Planned)
 
@@ -117,11 +116,12 @@ no `pytest-asyncio`, no coverage tool.
 |---|---|
 | `app/models/job_match.py` | Yes |
 | `app/services/job_score_service.py`, `job_match_level_service.py`, `profile_loader.py` | Yes |
-| `app/services/job_filter_service.py`, `job_ranking_service.py`, `app/vector/texts.py` | No (pure, easy wins) |
+| `app/services/job_filter_service.py` | Yes |
+| `job_ranking_service.py`, `app/vector/texts.py` | No (pure, easy wins) |
 | `app/db/job_repository.py` | No |
 | `app/services/job_ranker.py`, `app/vector/*` | No |
 | `app/job_sources/*`, `app/browser/*` | No |
-| `app/services/job_matching_pipeline.py`, `job_match_service.py`, `app/llm/*` | No |
+| `job_match_service.py` (prompt only: `test_job_match_prompt.py`), `app/llm/*` | Partly |
 | `app/agent/*` | No |
 
 ## CI plan (Planned — GitHub Actions)

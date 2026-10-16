@@ -97,7 +97,7 @@ Notes:
 
 | Task | Command |
 |---|---|
-| Full pipeline (search → store → filter → rank → LLM → print) | `uv run python main.py` |
+| One discovery run now with the profile's search (needs the worker; same as `scripts.start_discovery`) | `uv run python main.py` |
 | Agent prototype (tool calling + CLI approval) | `uv run python -m app.agent.agent` |
 | Count unmatched jobs / saved matches | `uv run python -m scripts.check_unmatched` |
 | Rebuild Qdrant vectors from Postgres (full JD when fetched) | `uv run python -m scripts.sync_jobs_to_qdrant` |
@@ -138,7 +138,6 @@ docker-compose (e.g. `TEMPORAL_DB_*` used only by the Temporal containers).
 
 | Variable | Default | Used by | Notes |
 |---|---|---|---|
-| `MAX_MATCH_JOBS` | `5` | pipeline | Max LLM evaluations per run (top N from Qdrant) |
 | `LOG_LEVEL` | `INFO` | logging | Applies to `app.*` loggers; third-party loggers stay at WARNING |
 | `LOG_FORMAT` | `console` | logging | `console` or `json` |
 | `PROFILE_PATH` | `profile.yaml` | `main.py`, agent, activities, scripts | Candidate profile YAML; its required `search:` section holds the default keyword / location and the filter lists |
@@ -189,7 +188,7 @@ runs headed with a 20 s timeout.
 | Headed browser fails over SSH / no display | No X server | `BROWSER_HEADLESS=true`, or use `xvfb-run` |
 | Log `no_job_cards_found` | No results, or Naukri changed markup / showed a challenge | Run headed and watch; check selectors in [06](06-browser-automation.md#selectors) |
 | Many cards but empty fields / `job_extraction_failed` | Selector drift | Update `app/job_sources/naukri_extractor.py` |
-| "No matching jobs found" every run | Filter too strict, or no job reaches cosine ≥ 0.7 | Check `jobs_filtered` and `jobs_ranked` log events; try `scripts/search_jobs.py` to see scores |
-| `matching_failed` warnings | Claude Code not logged in, rate-limited, or invalid JSON | Run `claude` interactively to check login; retry later |
-| Qdrant `Not found: Collection` in scripts | Collection not created yet | Run `main.py` once or `scripts/sync_jobs_to_qdrant.py` |
+| Every new job ends `filtered_out` | Filter too strict (profile `search:`), or no job reaches cosine ≥ 0.7 | Check the `jobs_ranked` log event and the workflow history in the UI; try `scripts/search_jobs.py` to see scores |
+| `match_job` activity failures in the Temporal UI | Claude Code not logged in, rate-limited, or invalid JSON | Run `claude` interactively to check login; the activity retries (3 attempts) |
+| Qdrant `Not found: Collection` in scripts | Collection not created yet | Run one discovery (the worker creates it) or `scripts/sync_jobs_to_qdrant.py` |
 | First run slow before ranking | fastembed downloads the model (~tens of MB) on first use | Wait; it is cached afterwards |
