@@ -1,6 +1,6 @@
 # 12 — Roadmap and status
 
-Verified against commit `65c1375`. Update this file in the same PR that changes a feature's status.
+Verified against commit `5c4f3c2` plus the patch-removal step 1 on `chore/leftovers-typing-roadmap-patches` (2026-10-15). Update this file in the same PR that changes a feature's status.
 
 ## Feature status
 
@@ -36,23 +36,23 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | Agent | Tool-calling prototype (`search_jobs`, `get_job_details`) | In progress | `app/agent/` |
 | Approval | CLI yes/no prompt (not persisted) | In progress | `app/agent/approval.py` |
 | Approval | Temporal `decide` signal + 3-day timeout (→ `expired`), status in `jobs.status` | Built | `app/workflows/job_application_workflow.py`, `scripts/list_pending.py`, `scripts/decide_job.py` |
-| Approval | Persist decision note + time (`record_approval` activity, `workflow.now()` at the signal, patch `record-approval-v1`) | Built | `app/workflows/job_application_workflow.py`, `app/workflows/activities.py`, `tests/workflows/histories/apply_job_v1.json` |
+| Approval | Persist decision note + time (`record_approval` activity, `workflow.now()` at the signal, patch `record-approval-v1`, now deprecated) | Built | `app/workflows/job_application_workflow.py`, `app/workflows/activities.py`, `tests/workflows/histories/record_approval_v1.json` |
 | Approval | Persist rejections and expiries (note + time) in `job_decisions` (`record_decision` activity, patch `record-decision-v1`) | Built | `app/workflows/job_application_workflow.py`, `app/workflows/activities.py`, `tests/workflows/histories/rejected_v1.json`, `expired_v1.json` |
 | Approval | Skip re-run workflows of jobs already applied live (`is_applied_live`, patch `skip-if-applied-v1`) | Built | `app/workflows/job_application_workflow.py`, `tests/workflows/test_job_application_workflow.py` |
 | Approval | Persist who decided (multi-user); API instead of scripts | Planned | — |
 | Apply | Application preparation (answers from `answers.yaml`) | Built | `app/services/answers_loader.py`, `app/models/application_answers.py`; validated by `ApplyService` before every apply |
 | Apply | Safety rails: `APPLY_MODE`, daily cap (advisory lock), idempotency, typed `ApplyResult`, no-retry apply | Built | `app/services/apply_service.py`, `app/workflows/activities.py` (`apply_job`) |
-| Apply | `workflow.patched("apply-job-v1")` versioning + replay test | Built | `app/workflows/job_application_workflow.py`, `tests/workflows/histories/` |
-| Apply | Remove `apply-job-v1` patch (`deprecate_patch`) once no pre-patch workflow is open | Planned | — |
+| Apply | `workflow.patched("apply-job-v1")` versioning + replay test (now deprecated, see below) | Built | `app/workflows/job_application_workflow.py`, `tests/workflows/histories/` |
+| Apply | Remove `apply-job-v1` + `record-approval-v1` patches, step 1: `patched()` → `deprecate_patch()`, old branches deleted, pre-patch histories retired | Built 2026-10-15 (6 open runs checked first, all `awaiting_approval` with no approval yet; their live histories replay on the new code) | `app/workflows/job_application_workflow.py`, `tests/workflows/histories/retired/`, `test_retired_histories_no_longer_replay` |
 | Apply | Live browser apply (`NaukriJobApplier`: session check, button classify, chatbot answers, confirmation, step artifacts) | Built (first live run OK 2026-10-07: job 25, no questions, confirmed; chatbot reading checked on the live drawer of job 1076, 2026-10-15) | `app/browser/job_applier.py`, `app/browser/apply_page.py` |
 | Apply | Deterministic question mapper (no LLM; unknown → `needs_manual`) | Built | `app/browser/apply_questions.py` |
 | Apply | Manual one-job live apply with y/N confirmation | Built | `scripts/apply_one.py` |
 | Apply | Idempotency + daily cap from `applications` (fixes re-apply after `jobs.status` was overwritten to `approved`); result and `jobs.status` in one commit | Built | `app/services/apply_service.py`, `app/db/job_repository.py`, `tests/integration/test_applications_db.py` |
 | Apply | Record manual applies / list jobs needing attention with reason / backfill of jobs 23 + 25 | Built | `scripts/mark_applied.py`, `scripts/list_pending.py`, `scripts/backfill_applications.py` |
-| Apply | Remove `record-approval-v1` patch once no workflow approved before it is open | Planned | — |
+| Apply | Remove `apply-job-v1` + `record-approval-v1` patches, step 2: delete the `deprecate_patch` calls and stop registering `apply_job_dry_run`, **only when no open `JobApplicationWorkflow` has either marker in its history** (approvals wait ≤ 3 days, cap wait ≤ `MAX_CAP_WAIT_DAYS`), separate deploy | Planned | `docs/03` (Versioning) |
 | Browser | Session reuse (`storage_state`, Fernet-encrypted, manual login script) | Built | `app/browser/session_store.py`, `scripts/naukri_login.py` |
 | Apply | Apply-flow inspection tool (button type, optional single click, no submit) | Built | `scripts/inspect_apply_flow.py`, `app/browser/apply_button.py` |
-| Apply | Company-site apply, phase 1: inspection tool + portal detection, field reading, hard stops (nothing typed) | In progress (live 2026-10-15: 33 jobs checked, 5 company-site, 1 company page inspected: kmgus.com, a generic form in a modal) | `scripts/inspect_company_site.py`, `app/browser/company_portal.py`, `company_site_page.py`, `company_site_selectors.py`, `tests/browser/test_company_portal.py` |
+| Apply | Company-site apply, phase 1: inspection tool + portal detection, field reading, hard stops (nothing typed) | Built (live 2026-10-15: 33 jobs checked, 5 company-site, kmgus.com inspected; then zaax.com read, filled and submitted end to end for job 1065, see the rows below; offline fixtures `generic_kmgus*.html`, `generic_zaax_*.html`, synthetic Greenhouse / Lever / Workday / CAPTCHA) | `scripts/inspect_company_site.py`, `app/browser/company_portal.py`, `company_site_page.py`, `company_site_selectors.py`, `tests/browser/test_company_portal.py`, `tests/fixtures/company_sites/` |
 | Apply | Company-site fill preview: `contact:` block in `answers.yaml`, deterministic field mapper, fill + read-back + screenshot, never submit (inspector `--fill-preview`) | Built (live `--fill-preview` 2026-10-15 on zaax.com/submit-resume via `--url`, job 1065: 19 filled, 0 read-back mismatches) | `app/browser/company_form_mapper.py`, `company_site_page.fill_form`, `app/models/application_answers.py` (`ContactAnswers`), `tests/browser/test_company_form_mapper.py` |
 | Apply | AI suggestions for unknown form fields (grounded in resume / profile / answers, quote-checked, per-field y/n/e, saved to `learned_answers.yaml`) | Built (preview only; live Claude check 2026-10-15 with a made-up resume) | `app/llm/form_answerer.py`, `app/services/resume_text.py`, `app/services/learned_answers.py`, `tests/llm/` |
 | Apply | Learned answers as a knowledge base: answers I type or change in the browser are offered y/N (fill preview + `apply_company_site`); related labels get up to 3 saved answers to pick from (local embeddings) | Built (tests + headless checks on the zaax fixture 2026-10-15, incl. a fetch() submit that clears the form; first live run, job 1065, lost the browser answers: Known issue #21, fixed) | `app/browser/form_edits.py`, `company_site_page.read_form_values` / `watch_form`, `learned_answers.similar_answers`, `scripts/company_form_cli.py`, `tests/browser/test_form_edits.py` |
@@ -70,10 +70,10 @@ Verified against commit `65c1375`. Update this file in the same PR that changes 
 | API / UI | FastAPI, Next.js dashboard | Planned | — |
 | Observability | structlog console/JSON | Built | `app/logging_config.py` |
 | Observability | OpenTelemetry, Grafana stack, Langfuse | Planned | — |
-| Testing | Unit tests (63) | Built | `tests/` |
+| Testing | Unit tests (328 on 2026-10-15) | Built | `tests/` |
 | Testing | Integration tests, evals | Planned | — |
 | CI | GitHub Actions | Planned | — |
-| Infra | Docker Compose: Postgres 16, Qdrant | Built | `docker-compose.yml` |
+| Infra | Docker Compose: Postgres 16, Qdrant, Temporal (server, own Postgres, UI, admin-tools) | Built | `docker-compose.yml` |
 | Infra | Alembic async migrations | Built | `alembic/` |
 
 ## Phases

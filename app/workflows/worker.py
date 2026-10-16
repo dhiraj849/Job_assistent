@@ -44,7 +44,7 @@ async def main() -> None:
             activities.record_decision,
             activities.apply_job,
             activities.expire_approval,
-            activities.apply_job_dry_run,  # old histories (pre "apply-job-v1")
+            activities.apply_job_dry_run,  # unused since "apply-job-v1" was deprecated; remove in step 2
         ],
         # Many application workflows can start at once; cap parallel
         # activities so we never run a flood of LLM calls or browsers.

@@ -16,7 +16,6 @@ with workflow.unsafe.imports_passed_through():
     from app.models.job_status import JobStatus
     from app.workflows.activities import (
         apply_job,
-        apply_job_dry_run,
         expire_approval,
         fetch_job_details,
         filter_job,
@@ -43,8 +42,11 @@ DETAILS_TIMEOUT = timedelta(minutes=2)
 DETAILS_DEADLINE = timedelta(minutes=30)
 
 # Version marker for the apply_job_dry_run -> apply_job change (see _run).
+# Deprecated (step 1 of 2): the old branch is gone; drop the call once no open
+# workflow has this marker in its history.
 APPLY_PATCH = "apply-job-v1"
 # Version marker for update_job_status(APPROVED) -> record_approval.
+# Deprecated (step 1 of 2), same as APPLY_PATCH.
 APPROVAL_PATCH = "record-approval-v1"
 # Version marker for the already-applied check at the start of _run.
 SKIP_APPLIED_PATCH = "skip-if-applied-v1"
@@ -168,34 +170,20 @@ class JobApplicationWorkflow:
             )
 
         # 5. Record the approval (applications row + jobs.status), then apply.
-        # Same patching idea as APPLY_PATCH below: old histories that already
-        # ran update_job_status(APPROVED) replay the old path.
-        if workflow.patched(APPROVAL_PATCH):
-            await workflow.execute_activity(
-                record_approval,
-                args=[job_id, self._decided_at, self._note],
-                start_to_close_timeout=DB_TIMEOUT,
-                retry_policy=RETRY_POLICY,
-            )
-            self._status = JobStatus.APPROVED
-        else:
-            await self._set_status(job_id, JobStatus.APPROVED)
-
-        # patched() is True for new code paths and records a marker in history.
-        # On replay of a history WITHOUT the marker (it already ran the old
-        # apply_job_dry_run), it returns False, so replay takes the old path
-        # instead of failing with a non-determinism error.
-        if workflow.patched(APPLY_PATCH):
-            return await self._apply(job_id)
-
-        # Pre-patch path, only for old histories. Remove with deprecate_patch later.
+        # deprecate_patch keeps writing the marker, so histories recorded
+        # with patched() still replay; histories from before the patch no
+        # longer do (none were open when the old branch was removed).
+        workflow.deprecate_patch(APPROVAL_PATCH)
         await workflow.execute_activity(
-            apply_job_dry_run,
-            job_id,
+            record_approval,
+            args=[job_id, self._decided_at, self._note],
             start_to_close_timeout=DB_TIMEOUT,
             retry_policy=RETRY_POLICY,
         )
-        return await self._set_status(job_id, JobStatus.APPLIED_DRY_RUN)
+        self._status = JobStatus.APPROVED
+
+        workflow.deprecate_patch(APPLY_PATCH)
+        return await self._apply(job_id)
 
     async def _apply(self, job_id: int) -> str:
         for day in range(MAX_CAP_WAIT_DAYS + 1):

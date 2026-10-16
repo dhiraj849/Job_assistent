@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from temporalio import activity
 from temporalio.client import WorkflowHandle, WorkflowHistory
 from temporalio.exceptions import ApplicationError
@@ -260,23 +261,21 @@ def test_daily_cap_gives_up_after_3_days():
     assert applied == [JOB_ID] * 4  # first try + 3 next days
 
 
-# --- Versioning (workflow.patched) ---------------------------------------
-# apply_dry_run_v0.json was recorded with the workflow code from BEFORE the
-# "apply-job-v1" patch: its history schedules apply_job_dry_run. Replaying it
-# with today's code must take the old branch, or Temporal raises a
-# non-determinism error and every such in-flight workflow gets stuck.
+# --- Versioning (workflow.patched / deprecate_patch) ---------------------
+# "apply-job-v1" and "record-approval-v1" are deprecated (step 1 of 2): their
+# old branches are gone, so histories recorded before them were moved to
+# histories/retired/ and must now FAIL to replay (proves the removal is real).
 
 
 def replayer() -> Replayer:
     return Replayer(workflows=[JobApplicationWorkflow], data_converter=pydantic_data_converter)
 
 
-def test_pre_patch_history_replays_on_old_path():
-    history = WorkflowHistory.from_json(
-        "job-pre-patch", (HISTORIES / "apply_dry_run_v0.json").read_text()
-    )
-    # Raises on non-determinism.
-    asyncio.run(replayer().replay_workflow(history))
+def test_retired_histories_no_longer_replay():
+    for path in sorted((HISTORIES / "retired").glob("*.json")):
+        history = WorkflowHistory.from_json(path.stem, path.read_text())
+        with pytest.raises(Exception, match="[Nn]ondetermin"):
+            asyncio.run(replayer().replay_workflow(history))
 
 
 def test_patched_history_replays_on_new_path():
@@ -286,6 +285,10 @@ def test_patched_history_replays_on_new_path():
     # + apply) and never schedules the old activities.
     markers = [e for e in history.events if e.HasField("marker_recorded_event_attributes")]
     assert [m.marker_recorded_event_attributes.marker_name for m in markers] == ["core_patch"] * 4
+    # Deprecated patches still write their marker, flagged as deprecated.
+    flags = _marker_flags(history)
+    assert flags["record-approval-v1"] is True
+    assert flags["apply-job-v1"] is True
     assert "apply_job_dry_run" not in history.to_json()
     assert '"approved"' not in history.to_json()  # no update_job_status(APPROVED)
 
@@ -316,16 +319,16 @@ def test_weak_match_is_filtered_out_without_approval():
     assert applied == []
 
 
-# apply_job_v1.json was recorded with the code from BEFORE "record-approval-v1":
-# it wrote update_job_status(APPROVED) and then ran apply_job. A workflow in
-# that state (e.g. sleeping on the daily cap) must still replay.
-
-
-def test_pre_approval_patch_history_replays_on_old_path():
-    history = WorkflowHistory.from_json(
-        "job-apply-v1", (HISTORIES / "apply_job_v1.json").read_text()
-    )
-    asyncio.run(replayer().replay_workflow(history))
+def _marker_flags(history: WorkflowHistory) -> dict[str, bool]:
+    """Patch id -> its "deprecated" flag, for every patch marker in history."""
+    flags = {}
+    for event in history.events:
+        if event.HasField("marker_recorded_event_attributes"):
+            for payloads in event.marker_recorded_event_attributes.details.values():
+                for payload in payloads.payloads:
+                    data = json.loads(payload.data)
+                    flags[data["id"]] = data["deprecated"]
+    return flags
 
 
 def _scheduled_inputs(history: WorkflowHistory, activity_name: str) -> list[list]:
@@ -568,7 +571,7 @@ def test_every_saved_history_replays():
     # Safety net: a new patch must not break ANY history kept in histories/,
     # including ones added later without their own test.
     files = sorted(HISTORIES.glob("*.json"))
-    assert len(files) >= 7
+    assert len(files) >= 6
     for path in files:
         history = WorkflowHistory.from_json(path.stem, path.read_text())
         asyncio.run(replayer().replay_workflow(history))
