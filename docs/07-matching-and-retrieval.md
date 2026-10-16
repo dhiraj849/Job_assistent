@@ -33,18 +33,24 @@ All stages are **Built** and run from `JobMatchingPipeline.run()` (`app/services
 
 ## Stage 1 — Keyword filter
 
-`JobFilterService.filter_jobs` (`app/services/job_filter_service.py`). Case-insensitive substring
-matching. **Keyword lists are hardcoded** in `__init__`, not read from the profile.
+`JobFilterService(search).filter_jobs` (`app/services/job_filter_service.py`). Every list comes
+from the profile's `search:` section (`SearchConfig` in `app/models/candidate_profile.py`, required,
+no code defaults; see `profile.example.yaml`). The `filter_job` activity loads the profile on each
+call, so YAML edits apply without a worker restart.
 
-| Rule | Keywords |
+| Rule | `search:` field |
 |---|---|
-| Exclude if title contains | frontend, front end, full stack, fullstack, ssh engineer, object engineer |
-| Keep if title contains | python, backend, back end, django, fastapi, flask, ai engineer, ml engineer, machine learning, genai, generative ai, rag |
-| Else keep if title contains "software developer"/"software engineer" **and** a skill tag contains | python, django, fastapi, flask, rest api, rest, backend, postgresql, mysql, mongodb, aws, docker |
+| Drop if the title has | `exclude_title_keywords` (may be empty) |
+| Keep if the title has | `title_keywords` |
+| Else keep if the title has a `generic_titles` entry **and** a skill tag has | `supporting_skills` |
 
-Returns `(job, matched_keywords)`; the pipeline currently discards `matched_keywords`.
-Caveat: substring matching means `"rag"` matches "sto**rag**e", "leve**rag**e" and `"rest"`
-matches "inte**rest**".
+Matching is case-insensitive and **whole-word**: each keyword becomes `(?<!\w)<escaped>(?!\w)`,
+compiled once in `__init__`. So `"rag"` no longer matches "sto**rag**e" and `"rest"` no longer
+matches "inte**rest**", while "RAG-based", "c++" and "node.js" still match
+(`tests/services/test_job_filter_service.py`).
+
+Returns `(job, matched_keywords)` (deduplicated, in order); the pipeline currently discards
+`matched_keywords`.
 
 ## Stage 2 — Semantic ranking (Qdrant)
 

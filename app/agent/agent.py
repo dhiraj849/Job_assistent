@@ -61,7 +61,7 @@ async def run_agent():
         prompt=(
             "You are a job search agent.\n\n"
             "First, use search_jobs to search for "
-            f"'{settings.JOB_SEARCH_KEYWORD}' in '{settings.JOB_SEARCH_LOCATION}'.\n\n"
+            f"'{candidate.search.keyword}' in '{candidate.search.location}'.\n\n"
             "After receiving the search results, "
             "use get_job_details for job 1.\n\n"
             "Then summarize the job details."

@@ -2,7 +2,7 @@
 
 Run: uv run python -m scripts.inspect_search_page
 
-Read only: one search (JOB_SEARCH_KEYWORD / JOB_SEARCH_LOCATION), then page 2.
+Read only: one search (profile search.keyword / search.location), then page 2.
 No other clicks. Writes tests/fixtures/naukri/search_page_<n>.html, trimmed to
 the job cards + the pagination block, and prints the URL, the raw pagination
 markup and the card count per page.
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from app.browser.naukri_browser import JOB_CARD, NaukriBrowser
 from app.config import settings
+from app.services.profile_loader import load_profile
 
 FIXTURES = Path("tests/fixtures/naukri")
 PAGE_DELAY_SECONDS = 3.0
@@ -85,7 +86,8 @@ async def main() -> None:
     await browser.start()
     try:
         await browser.open_naukri()
-        await browser.search_jobs(settings.JOB_SEARCH_KEYWORD, settings.JOB_SEARCH_LOCATION)
+        search = load_profile(settings.PROFILE_PATH).search
+        await browser.search_jobs(search.keyword, search.location)
 
         next_element = await capture(browser, 1)
         if next_element is None:

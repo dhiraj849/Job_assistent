@@ -107,7 +107,7 @@ Notes:
 | Embedding demo (no DB) | `uv run python -m scripts.embedding_demo` |
 | Temporal worker (runs both workflows + activities) | `uv run python -m app.workflows.worker` |
 | Before / after deploying workflow code: replay every open application workflow with this checkout (exit 1 = do not deploy) | `uv run python -m scripts.replay_open_runs` |
-| Start discovery workflow (needs worker; starts one `job-{id}` workflow per new job) | `uv run python -m scripts.start_discovery --keyword "Python" --location "Noida"` |
+| Start discovery workflow (needs worker; starts one `job-{id}` workflow per new job) | `uv run python -m scripts.start_discovery` (defaults: profile `search.keyword` / `search.location`; override with `--keyword` / `--location`) |
 | Start the application workflow for one existing job | `uv run python -m scripts.start_job_workflow <job_id>` |
 | List jobs awaiting your approval, company-site forms ready for you (grouped by CAPTCHA / OTP), then `needs_manual` / `failed` jobs with their reason | `uv run python -m scripts.list_pending` |
 | Fill a `ready_for_you` company-site form, then finish it yourself (CAPTCHA / OTP / Submit) and record it | `uv run python -m scripts.apply_company_site <job_id>` |
@@ -135,12 +135,10 @@ docker-compose (e.g. `TEMPORAL_DB_*` used only by the Temporal containers).
 
 | Variable | Default | Used by | Notes |
 |---|---|---|---|
-| `JOB_SEARCH_KEYWORD` | `Python Backend Engineer` | `main.py`, agent | Naukri search keyword |
-| `JOB_SEARCH_LOCATION` | `Noida` | `main.py`, agent | Naukri location |
 | `MAX_MATCH_JOBS` | `5` | pipeline | Max LLM evaluations per run (top N from Qdrant) |
 | `LOG_LEVEL` | `INFO` | logging | Applies to `app.*` loggers; third-party loggers stay at WARNING |
 | `LOG_FORMAT` | `console` | logging | `console` or `json` |
-| `PROFILE_PATH` | `profile.yaml` | `main.py`, agent, scripts | Candidate profile YAML |
+| `PROFILE_PATH` | `profile.yaml` | `main.py`, agent, activities, scripts | Candidate profile YAML; its required `search:` section holds the default keyword / location and the filter lists |
 | `ANSWERS_PATH` | `answers.yaml` | `app/services/answers_loader.py` | Apply-question answers YAML (unknown keys rejected) |
 | `BROWSER_HEADLESS` | `false` | Naukri source | `true` for headless Chromium |
 | `BROWSER_TIMEOUT_MS` | `20000` | Naukri source | Playwright default timeout |
@@ -170,6 +168,7 @@ runs headed with a 20 s timeout.
 |---|---|---|
 | `ModuleNotFoundError: No module named 'claude_agent_sdk'` | Environment out of date with `uv.lock` | `uv sync` |
 | `FileNotFoundError: Profile file not found: profile.yaml` | No profile | `cp profile.example.yaml profile.yaml` |
+| `ValidationError: ... search Field required` (worker `filter_job`, scripts) | `profile.yaml` from before the `search:` section | Copy the `search:` block from `profile.example.yaml` and adjust it |
 | `NAUKRI_STATE_KEY is not set` / `No saved session` / `Cannot decrypt` | Key missing, never logged in, or key changed | Generate a key (setup step 4), then `uv run python -m scripts.naukri_login` |
 | `Session expired` from `inspect_apply_flow` | Naukri logged the session out | `uv run python -m scripts.naukri_login` |
 | Login script says "Not logged in" although you are | `LOGGED_IN_MARKER` selector is unverified | Inspect the header HTML and fix `LOGGED_IN_MARKER` in `app/browser/naukri_browser.py` |

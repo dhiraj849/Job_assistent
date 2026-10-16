@@ -148,7 +148,8 @@ async def fetch_job_details(job_id: int) -> Job:
 @activity.defn
 async def filter_job(job: Job) -> bool:
     """True if the keyword filter keeps this job."""
-    return bool(JobFilterService().filter_jobs([job]))
+    # Profile read here (activity), never in workflow code.
+    return bool(JobFilterService(_load_profile().search).filter_jobs([job]))
 
 
 @activity.defn

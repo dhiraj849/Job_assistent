@@ -5,8 +5,8 @@ from app.job_sources.naukri import NaukriJobSource
 async def search_jobs(state: AgentState):
 
     job_source = NaukriJobSource(
-        keyword="Python Backend Engineer",
-        location="Noida"
+        keyword=state.candidate.search.keyword,
+        location=state.candidate.search.location
     )
 
     jobs = await job_source.get_jobs()
@@ -39,7 +39,7 @@ def demo_search_jobs(state: AgentState):
 from app.services.job_filter_service import JobFilterService
 def filter_jobs(state: AgentState):
 
-    filter_service = JobFilterService()
+    filter_service = JobFilterService(state.candidate.search)
 
     filtered_jobs = filter_service.filter_jobs(
         state.jobs

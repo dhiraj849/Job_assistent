@@ -11,11 +11,7 @@ class Settings(BaseSettings):
     # variables the app itself does not use instead of failing on them.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Job search
-    JOB_SEARCH_KEYWORD: str = "Python Backend Engineer"
-
-    JOB_SEARCH_LOCATION: str = "Noida"
-
+    # Job search (keyword / location live in the profile's search: section)
     MAX_MATCH_JOBS: int = 5
 
     # Logging

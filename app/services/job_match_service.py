@@ -16,7 +16,16 @@ class JobMatchService:
         job: Job
     ) -> JobMatchResult:
 
-        prompt = f"""
+        return await self.llm.generate(build_prompt(candidate_profile, job))
+
+
+def build_prompt(candidate_profile: CandidateProfile, job: Job) -> str:
+    # The search section is filter config, not facts about the candidate;
+    # keep it out of the CANDIDATE block and use only its role focus.
+    candidate = candidate_profile.model_dump(exclude={"search"})
+    role_focus = "\n".join(f"- {line}" for line in candidate_profile.search.role_focus)
+
+    return f"""
 You are a job matching system.
 
 Your task is to evaluate how well the job matches the candidate.
@@ -28,7 +37,7 @@ The application calculates the overall score separately.
 CANDIDATE
 ----------------------------------------
 
-{candidate_profile.model_dump()}
+{candidate}
 
 ----------------------------------------
 JOB
@@ -47,11 +56,7 @@ target profile.
 
 The candidate is primarily interested in:
 
-- Python backend development
-- Django
-- FastAPI
-- REST APIs
-- AI / GenAI backend roles
+{role_focus}
 
 Scoring guidance:
 
@@ -164,5 +169,3 @@ All three scores must be integers between 0 and 100.
 
 Do not return an overall score.
 """
-
-        return await self.llm.generate(prompt)

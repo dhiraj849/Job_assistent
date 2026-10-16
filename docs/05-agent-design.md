@@ -14,12 +14,13 @@ code computes the overall score, the level, the ranking, and whether anything is
 
 ### Input
 
-The prompt (`app/services/job_match_service.py:19-166`) embeds:
+The prompt (`build_prompt` in `app/services/job_match_service.py`) embeds:
 
-- `candidate_profile.model_dump()` — name, experience_years, skills, education.
+- `candidate_profile.model_dump(exclude={"search"})` — name, experience_years, skills, education
+  (the `search:` filter lists are not sent).
 - `job.model_dump()` — title, company, location, experience, salary, description (card snippet), skills, url.
-- **Hardcoded role focus**: Python backend, Django, FastAPI, REST APIs, AI/GenAI backend
-  (`job_match_service.py:48-54`) — not taken from the profile ([known issue](12-roadmap-and-status.md#known-issues)).
+- **Role focus** from the profile: `search.role_focus`, one bullet per line under "The candidate is
+  primarily interested in" (`tests/services/test_job_match_prompt.py`).
 - Scoring rubrics (bands 90-100 / 70-89 / 50-69 / 30-49 / 0-29) for role, skill and experience.
 - Instructions: don't invent requirements, weight core requirements, **don't return an overall score**.
 
@@ -161,7 +162,7 @@ answer covers. It is used only in the inspector's `--fill-preview`, and every va
 | Bounded concurrency (e.g. 3 parallel calls) | Planned |
 | Treat job text as untrusted data (prompt-injection): delimit it, instruct model to ignore instructions inside it | Planned (matcher); Built for form suggestions (no tools + quote check) |
 | Don't send candidate `name` (or other PII not needed for matching) to the LLM | Planned — currently sent via `model_dump()` |
-| Profile-driven role focus and filter keywords | Planned |
+| Profile-driven role focus and filter keywords | Built (`search:` in the profile YAML) |
 
 ## Prompt versioning (Planned)
 

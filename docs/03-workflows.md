@@ -52,7 +52,7 @@ sequenceDiagram
 | `save_jobs(jobs) -> list[int]` | `activities.py` | Own `SessionLocal` session; `JobRepository.save_jobs(source="naukri")` + `get_ids_by_urls`; returns the ids of the new jobs. start-to-close **30 s**. |
 | Client | `client.py` | `connect_client()` — the only way to connect; always uses `pydantic_data_converter`. |
 | Worker | `worker.py` | Registers both workflows + all activities on `TEMPORAL_TASK_QUEUE`, `max_concurrent_activities=3` (caps parallel LLM / browser work). A second `Worker` in the same process serves `fetch_job_details` on `BROWSER_TASK_QUEUE` (`job-agent-browser`, `app/workflows/task_queues.py`) with `max_concurrent_activities=1`: one detail page at a time, and waiting tasks stay on the server instead of holding a main-queue slot. Logs `worker_started` with `apply_mode`, `max_applies_per_day`, `browser_task_queue`, `detail_page_delay_seconds` and `detail_page_jitter_seconds`, so the log shows which safety rails the running worker uses. |
-| Starter | `scripts/start_discovery.py` | Starts the workflow with ID `discovery-{keyword}-{location}` (slugified), waits, prints the result. |
+| Starter | `scripts/start_discovery.py` | Keyword / location default to the profile's `search:` section. Starts the workflow with ID `discovery-{keyword}-{location}` (slugified), waits, prints the result. |
 
 - **Retry policy** (all activities, `app/workflows/retry.py`): max 3 attempts, initial interval 10 s, backoff 2.0.
 - **Payloads are our Pydantic models** (`Job`, `JobMatchItem`, `JobStatus`) via

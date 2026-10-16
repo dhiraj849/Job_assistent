@@ -25,10 +25,7 @@ async def main():
     # Create Job Matching Pipeline
     # --------------------------------------------------
 
-    pipeline = create_job_matching_pipeline(
-        keyword=settings.JOB_SEARCH_KEYWORD,
-        location=settings.JOB_SEARCH_LOCATION
-    )
+    pipeline = create_job_matching_pipeline(candidate.search)
 
     # --------------------------------------------------
     # Run Pipeline

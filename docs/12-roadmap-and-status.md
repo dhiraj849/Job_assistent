@@ -21,8 +21,8 @@ Verified against commit `5c4f3c2` plus the patch-removal step 1 on `chore/leftov
 | Storage | `applications` table (UNIQUE job_id, outcome, reason, dry_run, approved_at, applied_at, artifacts_dir; CHECK constraints) | Built | `app/db/models.py` (`ApplicationRecord`), migration `f734e9e72583` |
 | Storage | `job_decisions` table (append-only approved / rejected / expired log, UNIQUE workflow_run_id) | Built | `app/db/models.py` (`JobDecisionRecord`), migration `7a754c37777b` |
 | Storage | `users`, `candidate_profiles`, `pipeline_runs`; `user_id` on `applications` | Planned | — |
-| Matching | Keyword filter (hardcoded) | Built | `app/services/job_filter_service.py` |
-| Matching | Profile-driven filter keywords / role focus | Planned | — |
+| Matching | Keyword filter (whole-word, lists from profile `search:`) | Built | `app/services/job_filter_service.py` |
+| Matching | Profile-driven filter keywords / role focus | Built (2026-10-16; `SearchConfig`, no code defaults; also default search keyword/location) | `app/models/candidate_profile.py`, `profile.example.yaml`, `job_match_service.build_prompt`, `tests/services/test_job_filter_service.py`, `test_job_match_prompt.py` |
 | Retrieval | fastembed bge-small embeddings | Built | `app/vector/embedder.py` |
 | Retrieval | Qdrant collection per model + text version (`jobs_bge_small_v2`: full JD), lazy sync, ID-filtered search | Built | `app/vector/job_vector_store.py`, `app/services/job_ranker.py` |
 | Retrieval | Re-tune `MIN_SCORE` 0.7 for full-JD texts (scores rise +0.02–0.10, 5 jobs paired on 2026-10-08; keep 0.7 until ~30 full-JD jobs) | Planned | `docs/07` |
@@ -102,7 +102,7 @@ All verified in code unless marked otherwise.
 | 4 | `main.py` ignores `jobs.status` → rejected jobs reprocessed every run | `get_unmatched_jobs_with_ids` selects all jobs without a match; only the Temporal workflows set `jobs.status` | `main.py` path: filtered-out / below-threshold jobs re-filtered and re-ranked for 14 days | Retire `main.py` pipeline in favour of the workflows (1) |
 | 5 | Blocking embedding and sync Qdrant calls inside async code (`main.py` path; the `semantic_score` activity already uses `asyncio.to_thread`) | `self.ranker.rank(...)` called without `await`/thread in `job_matching_pipeline.py:106`; `Embedder` (fastembed) and `QdrantClient` are sync | Event loop blocked during ranking | `asyncio.to_thread` + `AsyncQdrantClient` (2) |
 | 6 | `job_matches.job_id` unique → single-user only | `app/db/models.py:38`, migration `6fc31f68061a:40` | Can't store matches for a second user or a new prompt version | Composite unique key (6; prompt part in 2) |
-| 7 | Filter keywords and prompt role focus hardcoded | `job_filter_service.py:8-45`, `job_match_service.py:48-54`; also `app/agent/steps.py:7-10` hardcodes keyword/location | Profile changes don't affect filtering or scoring | Move to `candidate_profiles` / `profile.yaml` (1) |
+| 7 | ~~Filter keywords and prompt role focus hardcoded~~ **Fixed** | Lists, role focus and default keyword/location now come from the profile's `search:` section (`SearchConfig`); `JOB_SEARCH_KEYWORD` / `JOB_SEARCH_LOCATION` settings removed | — | Done (1) |
 | 8 | LLM calls sequential, no timeout / retry (`main.py` path; the `match_job` activity has 2 min timeout, 3 attempts, max 3 parallel activities) | `job_matching_pipeline.py:124-150`, `claude_code.py:17-25` | Slow runs; a hung call hangs the run | Timeout, retry, `asyncio.Semaphore` (2) |
 | 9 | Wrong return type hint in `ClaudeCodeProvider` | `claude_code.py:13` says `-> str`, returns `JobMatchResult` (`:29`) | Misleading; type checker would flag | Fix hint / introduce `LLMProvider` (0) |
 | 10 | Duplicate flows: `app/agent/` vs `JobMatchingPipeline` | `app/agent/steps.py` re-implements search/filter/score/level/rank, with demo data | Two sources of truth for the same logic | Keep one path; agent → tool use inside activities (2) |
@@ -124,14 +124,14 @@ All verified in code unless marked otherwise.
 | Item | Evidence |
 |---|---|
 | Candidate name logged (PII) | `main.py:23`, `app/agent/agent.py:29-33` |
-| Full profile incl. name sent to LLM | `job_match_service.py:31` (`model_dump()`) |
+| Full profile incl. name sent to LLM | `job_match_service.build_prompt` (`model_dump(exclude={"search"})`) |
 | X API settings left over from MCP experiment | `app/config.py:48-51` |
 | `.env.example` lacks `POSTGRES_*`, which Compose requires | `.env.example`, `docker-compose.yml:6-8` |
 | `.mcp.json` hardcodes an absolute path to `venv/` (the project uses `.venv`) | `.mcp.json` |
 | Scripts run on import (no `if __name__ == "__main__"`) | `scripts/search_jobs.py:34`, `scripts/sync_jobs_to_qdrant.py:49`, `scripts/embedding_demo.py` |
 | Semantic threshold inconsistent (0.7 vs 0.07) and untuned | `job_ranker.py:10`, `scripts/search_jobs.py:25` |
 | `JobMatchService` constructs its LLM provider (no injection) | `job_match_service.py:11` |
-| Filter's `matched_keywords` computed then discarded; substring matching gives false positives (`rag`, `rest`) | `job_filter_service.py`, `job_matching_pipeline.py:95` |
+| Filter's `matched_keywords` computed then discarded | `job_matching_pipeline.py:95` |
 | Agent tool ignores `BROWSER_HEADLESS` / timeout settings | `app/agent/claude_tools.py:38` |
 | Imports in the middle of `app/agent/steps.py` | `steps.py:18,39,55,99,115,130` |
 | No async tests; no coverage tool; no linter/type checker configured | `pyproject.toml` |

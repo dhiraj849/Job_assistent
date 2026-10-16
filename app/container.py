@@ -2,6 +2,7 @@ from qdrant_client import QdrantClient
 
 from app.config import settings
 from app.job_sources.naukri import NaukriJobSource
+from app.models.candidate_profile import SearchConfig
 from app.services.job_discovery_service import JobDiscoveryService
 from app.services.job_filter_service import JobFilterService
 from app.services.job_match_level_service import JobMatchLevelService
@@ -14,14 +15,11 @@ from app.vector.embedder import Embedder
 from app.vector.job_vector_store import JobVectorStore
 
 
-def create_job_matching_pipeline(
-    keyword: str,
-    location: str
-) -> JobMatchingPipeline:
+def create_job_matching_pipeline(search: SearchConfig) -> JobMatchingPipeline:
 
     job_source = NaukriJobSource(
-        keyword=keyword,
-        location=location,
+        keyword=search.keyword,
+        location=search.location,
         headless=settings.BROWSER_HEADLESS,
         timeout_ms=settings.BROWSER_TIMEOUT_MS,
     )
@@ -30,7 +28,7 @@ def create_job_matching_pipeline(
         job_source=job_source
     )
 
-    filter_service = JobFilterService()
+    filter_service = JobFilterService(search)
 
     match_service = JobMatchService()
 
