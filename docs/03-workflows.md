@@ -51,7 +51,7 @@ sequenceDiagram
 | `discover_jobs(keyword, location) -> list[Job]` | `activities.py` | Wraps `NaukriJobSource.get_jobs`; reads up to `MAX_SEARCH_PAGES` result pages (settings read in the activity, so the workflow args and histories are unchanged). start-to-close **3 min** (`MAX_SEARCH_PAGES` is capped at 5 to fit it; 3 pages took 45 s live). |
 | `save_jobs(jobs) -> list[int]` | `activities.py` | Own `SessionLocal` session; `JobRepository.save_jobs(source="naukri")` + `get_ids_by_urls`; returns the ids of the new jobs. start-to-close **30 s**. |
 | Client | `client.py` | `connect_client()` — the only way to connect; always uses `pydantic_data_converter`. |
-| Worker | `worker.py` | Registers both workflows + all activities on `TEMPORAL_TASK_QUEUE`, `max_concurrent_activities=3` (caps parallel LLM / browser work). A second `Worker` in the same process serves `fetch_job_details` on `BROWSER_TASK_QUEUE` (`job-agent-browser`, `app/workflows/task_queues.py`) with `max_concurrent_activities=1`: one detail page at a time, and waiting tasks stay on the server instead of holding a main-queue slot. Logs `worker_started` with `apply_mode`, `max_applies_per_day`, `browser_task_queue`, `detail_page_delay_seconds` and `detail_page_jitter_seconds`, so the log shows which safety rails the running worker uses. |
+| Worker | `worker.py` | Registers the three workflows (discovery, application, backfill) + all activities on `TEMPORAL_TASK_QUEUE`, `max_concurrent_activities=3` (caps parallel LLM / browser work). A second `Worker` in the same process serves `fetch_job_details` on `BROWSER_TASK_QUEUE` (`job-agent-browser`, `app/workflows/task_queues.py`) with `max_concurrent_activities=1`: one detail page at a time, and waiting tasks stay on the server instead of holding a main-queue slot. Logs `worker_started` with `apply_mode`, `max_applies_per_day`, `browser_task_queue`, `detail_page_delay_seconds` and `detail_page_jitter_seconds`, so the log shows which safety rails the running worker uses. |
 | Starter | `scripts/start_discovery.py` | Keyword / location default to the profile's `search:` section. Starts the workflow with ID `discovery-{keyword}-{location}` (slugified), waits, prints the result. |
 
 - **Retry policy** (all activities, `app/workflows/retry.py`): max 3 attempts, initial interval 10 s, backoff 2.0.
@@ -88,6 +88,22 @@ sequenceDiagram
     end
     W-->>S: {"found": N, "new": M}
 ```
+
+## Detail backfill workflow (Built)
+
+For jobs saved before detail fetching existed (`details_fetched_at IS NULL`). Reads their detail
+page and re-embeds them; **no filter, LLM match or approval**, and `jobs.status` is unchanged.
+
+| Piece | File | What it does |
+|---|---|---|
+| `BackfillDetailsWorkflow.run(job_ids) -> {"fetched": [...], "failed": [...]}` | `backfill_details_workflow.py` | One job at a time: `fetch_job_details` on `job-agent-browser` (same timeouts / retry as the application workflow, so the activity's delay + jitter spaces the requests), then `embed_job` right away, so a run stopped halfway never leaves a full JD in Postgres with a snippet vector in Qdrant. A failed fetch (e.g. an expired posting → `DetailParseError`) is logged, listed in `failed`, not embedded, and the loop goes on. |
+| `embed_job(job_id)` | `activities.py` | Loads the job (full JD via `_to_job`) and **overwrites** its vector with `upsert_job_vectors` ([07](07-matching-and-retrieval.md)); `create_collection_if_missing` first; runs in a thread. 2 min, `RETRY_POLICY`. |
+| Starter | `scripts/backfill_details.py` | `--limit N` (default 10) jobs from `JobRepository.get_jobs_without_details`, newest `last_seen_at` first; `--dry-run` only lists them (no Temporal call). Fixed workflow ID `backfill-details`: a second run while one is open is refused. |
+
+Idempotent: a fetched job costs no request, the vector write overwrites, and only jobs still without
+details are picked, so failed ones are retried on the next run. A new workflow type, so no
+`patched()`; `tests/workflows/histories/backfill_details_v1.json` (one failed job) is replayed by
+`test_every_saved_history_replays`. Tests: `tests/workflows/test_backfill_details_workflow.py`.
 
 ## Application workflow (Built, dry-run)
 

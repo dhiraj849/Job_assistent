@@ -11,6 +11,7 @@ from temporalio.worker import Worker
 from app.config import settings
 from app.logging_config import setup_logging
 from app.workflows import activities
+from app.workflows.backfill_details_workflow import BackfillDetailsWorkflow
 from app.workflows.client import connect_client
 from app.workflows.job_application_workflow import JobApplicationWorkflow
 from app.workflows.job_discovery_workflow import JobDiscoveryWorkflow
@@ -29,7 +30,7 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=settings.TEMPORAL_TASK_QUEUE,
-        workflows=[JobDiscoveryWorkflow, JobApplicationWorkflow],
+        workflows=[JobDiscoveryWorkflow, JobApplicationWorkflow, BackfillDetailsWorkflow],
         activities=[
             activities.discover_jobs,
             activities.save_jobs,
@@ -44,6 +45,7 @@ async def main() -> None:
             activities.record_decision,
             activities.apply_job,
             activities.expire_approval,
+            activities.embed_job,
         ],
         # Many application workflows can start at once; cap parallel
         # activities so we never run a flood of LLM calls or browsers.

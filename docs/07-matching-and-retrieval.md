@@ -76,7 +76,9 @@ Texts (`app/vector/texts.py`):
 Steps:
 
 1. `create_collection_if_missing()`.
-2. Lazy sync: `find_missing_ids` → embed and upsert only jobs without a vector.
+2. Lazy sync: `find_missing_ids` → embed and upsert only jobs without a vector
+   (`upsert_job_vectors` in `app/vector/job_sync.py`, the one function that writes job vectors; also
+   used by `scripts/sync_jobs_to_qdrant.py` and the `embed_job` activity).
 3. Embed the profile; `query_points` restricted to the candidate IDs (`HasIdCondition`), `limit=N`,
    `score_threshold=0.7`.
 4. Map IDs back to jobs, preserving Qdrant order.
@@ -92,9 +94,10 @@ Known limitations:
 - The 0.7 threshold is unvalidated. `scripts/search_jobs.py` uses 0.07, which suggests the value was
   being explored. Tune on the golden set ([05](05-agent-design.md#evals)).
 - The Qdrant score is logged but not stored. Planned: `job_matches.semantic_score`.
-- Vectors are never updated when a job's text changes. New jobs are fine (details are fetched before
-  their first embedding); the jobs embedded in v1 got no backfill. If a job's details are fetched
-  after it was embedded in v2, its vector stays on the snippet.
+- The lazy sync only adds missing vectors; it never updates one when a job's text changes. New jobs
+  are fine (details are fetched before their first embedding). Jobs saved before detail fetching are
+  fixed by `scripts/backfill_details.py` (fetch + `embed_job` overwrite, [03](03-workflows.md#detail-backfill-workflow-built));
+  `scripts/sync_jobs_to_qdrant.py` overwrites every vector from Postgres.
 - Full-JD texts score a bit higher than snippets (measured 2026-10-07 on 3 jobs: +0.01 to +0.06,
   e.g. 0.709 → 0.771), so more jobs may pass `MIN_SCORE` 0.7. Watch the shortlisted rate before
   tuning.
@@ -128,7 +131,8 @@ only candidates: I pick one in the fill review, nothing is filled from a score a
 
 | Script | Purpose |
 |---|---|
-| `scripts/sync_jobs_to_qdrant.py` | Embed all Postgres jobs and upsert into Qdrant (rebuild / backfill). |
+| `scripts/sync_jobs_to_qdrant.py` | Embed all Postgres jobs and overwrite their Qdrant vectors (rebuild). Reads through `JobRepository.get_all_jobs_with_ids`, so the **full JD** is embedded when fetched (before 2026-10-16 it read the raw `description` column, the snippet). |
+| `scripts/backfill_details.py` | Fetch detail pages for jobs without details and re-embed them (`--dry-run`, `--limit`); see [03](03-workflows.md#detail-backfill-workflow-built). |
 | `scripts/search_jobs.py [free text]` | Semantic search with the profile or a query, threshold 0.07, top 5. |
 | `scripts/embedding_demo.py` | Stand-alone cosine similarity demo, no DB. |
 | `scripts/check_unmatched.py` | Count unmatched jobs and saved matches. |

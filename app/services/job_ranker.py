@@ -3,7 +3,8 @@ import structlog
 from app.models.job import Job
 from app.vector.embedder import Embedder
 from app.vector.job_vector_store import JobVectorStore
-from app.vector.texts import job_to_text, profile_to_text
+from app.vector.job_sync import upsert_job_vectors
+from app.vector.texts import profile_to_text
 
 logger = structlog.get_logger(__name__)
 
@@ -59,14 +60,6 @@ class JobRanker:
         if not missing_ids:
             return
 
-        jobs = [job_by_id[job_id] for job_id in missing_ids]
-        texts = [job_to_text(job.title, job.skills, job.description) for job in jobs]
-
-        self.store.upsert_jobs(
-            job_ids=missing_ids,
-            vectors=self.embedder.embed(texts),
-            payloads=[
-                {"title": job.title, "company": job.company, "location": job.location}
-                for job in jobs
-            ],
+        upsert_job_vectors(
+            self.embedder, self.store, {job_id: job_by_id[job_id] for job_id in missing_ids}
         )

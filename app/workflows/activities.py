@@ -36,6 +36,7 @@ from app.services.job_ranker import JobRanker
 from app.services.job_score_service import JobScoreService
 from app.services.profile_loader import load_profile
 from app.vector.embedder import Embedder
+from app.vector.job_sync import upsert_job_vectors
 from app.vector.job_vector_store import JobVectorStore
 
 logger = structlog.get_logger(__name__)
@@ -147,6 +148,24 @@ async def fetch_job_details(job_id: int) -> Job:
     async with SessionLocal() as session:
         await JobRepository(session).save_details(job_id, page)
     return await _get_job(job_id)
+
+
+@activity.defn
+async def embed_job(job_id: int) -> None:
+    """Re-embed one job from the DB and overwrite its Qdrant vector.
+
+    Used after a detail backfill: the vector was made from the snippet and
+    must now match the full JD. Overwriting makes a retry harmless.
+    """
+    job = await _get_job(job_id)
+    ranker = _ranker()
+
+    def write() -> None:
+        ranker.store.create_collection_if_missing()
+        upsert_job_vectors(ranker.embedder, ranker.store, {job_id: job})
+
+    # fastembed + the sync Qdrant client block; keep the event loop free.
+    await asyncio.to_thread(write)
 
 
 @activity.defn

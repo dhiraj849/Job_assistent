@@ -75,7 +75,7 @@ flowchart TB
         api["FastAPI API<br/>[Planned]"]
         tsrv["Temporal server + UI<br/>[Planned]"]
         subgraph worker["Temporal worker (Python) [In progress]"]
-            wf["Workflows<br/>Discovery / Application"]
+            wf["Workflows<br/>Discovery / Application / Backfill"]
             acts["Activities<br/>browser, match, persist"]
             pw["Playwright Chromium"]
             emb["fastembed"]
@@ -208,7 +208,7 @@ flowchart TB
 | Persistence | `app/db/`, `alembic/` | Tables, repository, migrations | Built |
 | DTOs | `app/models/` | Pydantic models passed between layers | Built |
 | API / UI | — | FastAPI, Next.js | Planned |
-| Workflows | `app/workflows/` | Temporal workflows, activities, worker, client (Pydantic converter) | In progress (discovery + per-job application with approval; apply is dry-run) |
+| Workflows | `app/workflows/` | Temporal workflows, activities, worker, client (Pydantic converter) | In progress (discovery + per-job application with approval; apply is dry-run; detail backfill for old jobs) |
 
 ### Dependency rules (to keep as the code grows)
 
@@ -245,7 +245,7 @@ sequenceDiagram
 |---|---|---|
 | Trigger | Manual `python main.py` | Temporal Schedule → `JobDiscoveryWorkflow` |
 | Orchestration | `JobMatchingPipeline.run()` in-process | Temporal workflows + activities |
-| Job detail | Workflow path: detail page read after the filter (`jobs.description_full`, `jobs.details`); `main.py` path: snippet unless details were already stored | Same, plus a backfill for older jobs |
+| Job detail | Workflow path: detail page read after the filter (`jobs.description_full`, `jobs.details`); `main.py` path: snippet unless details were already stored; older jobs: `scripts/backfill_details.py` | Same |
 | Job state | Implicit (row in `jobs` / row in `job_matches`) | Explicit lifecycle state machine ([03](03-workflows.md#job-lifecycle-state-machine)) |
 | LLM | `ClaudeCodeProvider` called directly, sequential | `LLMProvider` interface, timeouts, retries, bounded concurrency |
 | Approval | CLI `input()` in prototype | Signal from dashboard/API with timeout |

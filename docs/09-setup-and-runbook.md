@@ -100,7 +100,8 @@ Notes:
 | Full pipeline (search → store → filter → rank → LLM → print) | `uv run python main.py` |
 | Agent prototype (tool calling + CLI approval) | `uv run python -m app.agent.agent` |
 | Count unmatched jobs / saved matches | `uv run python -m scripts.check_unmatched` |
-| Rebuild Qdrant vectors from Postgres | `uv run python -m scripts.sync_jobs_to_qdrant` |
+| Rebuild Qdrant vectors from Postgres (full JD when fetched) | `uv run python -m scripts.sync_jobs_to_qdrant` |
+| Backfill detail pages for old jobs + re-embed (needs worker; no LLM / approvals) | `uv run python -m scripts.backfill_details --dry-run` to list, then `--limit 10` to run |
 | Semantic search with your profile | `uv run python -m scripts.search_jobs` |
 | Semantic search with free text | `uv run python -m scripts.search_jobs "django rest api fintech"` |
 | Save one job detail page's HTML to `/tmp/naukri_job_page.html` | `uv run python -m scripts.inspect_job_page` |

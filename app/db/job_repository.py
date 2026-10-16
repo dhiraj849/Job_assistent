@@ -137,6 +137,21 @@ class JobRepository:
         )
         return {url: job_id for url, job_id in result.all()}
 
+    async def get_jobs_without_details(self, limit: int) -> list[tuple[int, str, str]]:
+        """(id, status, title) of jobs whose detail page was never read, newest first."""
+        result = await self.session.execute(
+            select(JobRecord.id, JobRecord.status, JobRecord.title)
+            .where(JobRecord.details_fetched_at.is_(None))
+            .order_by(JobRecord.last_seen_at.desc(), JobRecord.id.desc())
+            .limit(limit)
+        )
+        return [tuple(row) for row in result.all()]
+
+    async def get_all_jobs_with_ids(self) -> list[tuple[int, Job]]:
+        """Every job as (id, Job), full JD when fetched (for the Qdrant resync)."""
+        result = await self.session.execute(select(JobRecord).order_by(JobRecord.id))
+        return [(record.id, _to_job(record)) for record in result.scalars().all()]
+
     async def get_unmatched_jobs_with_ids(
         self, max_age_days: int = 14
     ) -> list[tuple[int, Job]]:

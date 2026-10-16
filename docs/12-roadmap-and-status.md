@@ -26,7 +26,8 @@ Verified against commit `5c4f3c2` plus the patch-removal step 1 on `chore/leftov
 | Retrieval | fastembed bge-small embeddings | Built | `app/vector/embedder.py` |
 | Retrieval | Qdrant collection per model + text version (`jobs_bge_small_v2`: full JD), lazy sync, ID-filtered search | Built | `app/vector/job_vector_store.py`, `app/services/job_ranker.py` |
 | Retrieval | Re-tune `MIN_SCORE` 0.7 for full-JD texts (scores rise +0.02–0.10, 5 jobs paired on 2026-10-08; keep 0.7 until ~30 full-JD jobs) | Planned | `docs/07` |
-| Retrieval | Full re-sync script | Built | `scripts/sync_jobs_to_qdrant.py` |
+| Retrieval | Full re-sync script (full JD via repository; fixed 2026-10-16, it embedded the snippet) | Built | `scripts/sync_jobs_to_qdrant.py`, `app/vector/job_sync.py` |
+| Retrieval | Detail backfill + re-embed for old jobs (`--dry-run`, `--limit`, idempotent) | Built (2026-10-16; dry run 37 jobs, live run pending) | `scripts/backfill_details.py`, `app/workflows/backfill_details_workflow.py`, `activities.embed_job`, `tests/workflows/test_backfill_details_workflow.py` |
 | LLM | Claude structured-output evaluation | Built | `app/llm/claude_code.py`, `app/services/job_match_service.py` |
 | LLM | `LLMProvider` interface | Planned | — |
 | LLM | Ollama fallback | Planned | — |
@@ -98,7 +99,7 @@ All verified in code unless marked otherwise.
 |---|---|---|---|---|
 | 1 | **Secrets in comments in `server.py`, committed and pushed** | `server.py:21-26`; commit `39612aa` is on `origin/main` | Credentials compromised | Rotate all, delete lines, gitleaks ([10](10-security.md#open-incident-secrets-committed-to-git)) (0) |
 | 2 | ~~`claude-agent-sdk` and `mcp` imported but not declared~~ **Fixed** | Both now in `pyproject.toml` and `uv.lock` | — | Done (0) |
-| 3 | ~~Job description is only the search-card snippet~~ **Fixed** for new jobs | `fetch_job_details` reads the detail page before semantic score + LLM; jobs saved earlier keep the snippet (no backfill) | — | Done (1) |
+| 3 | ~~Job description is only the search-card snippet~~ **Fixed** | `fetch_job_details` reads the detail page before semantic score + LLM; older jobs: `scripts/backfill_details.py` (`BackfillDetailsWorkflow`: fetch + re-embed, no LLM). Built 2026-10-16; dry run lists 37 jobs, live backfill not run yet | — | Done (1) |
 | 4 | `main.py` ignores `jobs.status` → rejected jobs reprocessed every run | `get_unmatched_jobs_with_ids` selects all jobs without a match; only the Temporal workflows set `jobs.status` | `main.py` path: filtered-out / below-threshold jobs re-filtered and re-ranked for 14 days | Retire `main.py` pipeline in favour of the workflows (1) |
 | 5 | Blocking embedding and sync Qdrant calls inside async code (`main.py` path; the `semantic_score` activity already uses `asyncio.to_thread`) | `self.ranker.rank(...)` called without `await`/thread in `job_matching_pipeline.py:106`; `Embedder` (fastembed) and `QdrantClient` are sync | Event loop blocked during ranking | `asyncio.to_thread` + `AsyncQdrantClient` (2) |
 | 6 | `job_matches.job_id` unique → single-user only | `app/db/models.py:38`, migration `6fc31f68061a:40` | Can't store matches for a second user or a new prompt version | Composite unique key (6; prompt part in 2) |
@@ -128,7 +129,7 @@ All verified in code unless marked otherwise.
 | X API settings left over from MCP experiment | `app/config.py:48-51` |
 | `.env.example` lacks `POSTGRES_*`, which Compose requires | `.env.example`, `docker-compose.yml:6-8` |
 | `.mcp.json` hardcodes an absolute path to `venv/` (the project uses `.venv`) | `.mcp.json` |
-| Scripts run on import (no `if __name__ == "__main__"`) | `scripts/search_jobs.py:34`, `scripts/sync_jobs_to_qdrant.py:49`, `scripts/embedding_demo.py` |
+| Scripts run on import (no `if __name__ == "__main__"`) | `scripts/search_jobs.py:34`, `scripts/embedding_demo.py` |
 | Semantic threshold inconsistent (0.7 vs 0.07) and untuned | `job_ranker.py:10`, `scripts/search_jobs.py:25` |
 | `JobMatchService` constructs its LLM provider (no injection) | `job_match_service.py:11` |
 | Filter's `matched_keywords` computed then discarded | `job_matching_pipeline.py:95` |

@@ -25,6 +25,7 @@ from app.models.job_details import JobDetails
 from app.models.job_match import JobMatchResult
 from app.models.job_match_item import JobMatchItem
 from app.models.job_status import JobStatus
+from app.workflows.backfill_details_workflow import BackfillDetailsWorkflow
 from app.workflows.job_application_workflow import (
     APPROVAL_TIMEOUT,
     CAP_EXPIRED_REASON,
@@ -269,7 +270,11 @@ def test_daily_cap_gives_up_after_3_days():
 
 
 def replayer() -> Replayer:
-    return Replayer(workflows=[JobApplicationWorkflow], data_converter=pydantic_data_converter)
+    # Every workflow type that has a history in histories/ (picked by type).
+    return Replayer(
+        workflows=[JobApplicationWorkflow, BackfillDetailsWorkflow],
+        data_converter=pydantic_data_converter,
+    )
 
 
 def test_retired_histories_no_longer_replay():
