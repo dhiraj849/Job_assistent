@@ -111,7 +111,6 @@ yet verified ([06](06-browser-automation.md#live-apply-built-chatbot-selectors-n
 | `record_decision(job_id, decision, decided_at, note)` | `JobRepository.record_decision`: `job_decisions` row (`rejected` / `expired`) + `jobs.status`, one commit | 30 s | — |
 | `apply_job(job_id)` | `ApplyService` (`app/services/apply_service.py`) | 5 min | `ApplyResult` |
 | `expire_approval(job_id, reason)` | `JobRepository.expire_approval`: `applications` `pending` → `expired` + reason + `jobs.status=expired`, one commit; any other outcome is left untouched | 30 s | — |
-| `apply_job_dry_run(job_id)` | `JobRepository.get_job`, logs `apply_dry_run` | 30 s | message — **no longer scheduled** (`apply-job-v1` deprecated); still registered on the worker until patch removal step 2 |
 
 All except `apply_job` use the shared retry policy (max 3 attempts). `apply_job` uses
 `APPLY_RETRY_POLICY` (**1 attempt**): retrying a half-finished apply could apply twice. The profile is loaded inside activities from
@@ -144,14 +143,18 @@ All except `apply_job` use the shared retry policy (max 3 attempts). `apply_job`
   `needs_manual` / `failed` jobs with their reason), `scripts/mark_applied.py <job_id> --reason`
   (records an apply done by hand),
   `scripts/decide_job.py <job_id> yes|no [note]` (checks status via the query, then signals),
-  `scripts/start_job_workflow.py <job_id>` (for jobs saved before workflows existed).
+  `scripts/start_job_workflow.py <job_id>` (for jobs saved before workflows existed),
+  `scripts/replay_open_runs.py` (replays every open `JobApplicationWorkflow` with this checkout's
+  code and prints its patch markers; exit 1 if any fails — run before and after a workflow deploy).
 - **Tests:** `tests/workflows/test_job_application_workflow.py` — approved, rejected,
   3-day timeout → expired, weak → filtered_out, needs_manual, cap wait + retry, cap → expired after
   3 days (via `expire_approval`, no `update_job_status(expired)`), every file in `histories/` replays, `record_approval` gets the note and decision time (and is not called on reject),
   `record_decision` gets the rejection note/time and the timeout time, an already-applied job never
-  reaches `load_job` / `match_job`, histories in `histories/retired/` (pre-`apply-job-v1`,
-  pre-`record-approval-v1`) must fail to replay, and replay of the pre-`record-decision-v1` and current histories, plus real ones (`record_approval_v1.json`, job-38;
-  `awaiting_approval_v1.json`, job-37 waiting for approval before `fetch-details-v1`) from the local
+  reaches `load_job` / `match_job`, histories in `histories/retired/` (pre-patch or with
+  non-deprecated `apply-job-v1` / `record-approval-v1` markers) must fail to replay, a history with
+  deprecated markers (`deprecated_markers_v1.json`) replays without the calls, and replay of the
+  pre-`record-decision-v1` and current histories, plus a real one (`awaiting_approval_v1.json`,
+  job-37 waiting for approval before `fetch-details-v1`) from the local
   server; the full JD reaches `semantic_score` and `match_job`, a broken detail page falls back to
   the snippet, a filtered-out job reads no page, and `fetch_job_details` is scheduled on the browser
   queue with the 30-min deadline (time-skipping server, fake activities). Activity:
@@ -192,7 +195,7 @@ stateDiagram-v2
 A company-site job ends the workflow at `ready_for_you`. The rest happens outside Temporal: I
 run `scripts/apply_company_site.py`. No workflow can wait for me to solve a CAPTCHA. The workflow
 only mirrors the new outcome in `_final_status` (a query value, no new command), so it needs no
-`workflow.patched`. `tests/workflows/histories/ready_for_you_v1.json` (recorded from this code)
+`workflow.patched`. `tests/workflows/histories/ready_for_you_v2.json` (recorded from this code)
 replays in `test_ready_for_you_history_replays`.
 
 ### Apply safety rails (Built)
@@ -245,7 +248,7 @@ in a new workflow run (`record_approval` resets the row to `pending`).
 ### Versioning with `workflow.patched` (Built)
 
 The switch from `apply_job_dry_run` to `apply_job` was guarded by `workflow.patched("apply-job-v1")`
-(now deprecated, see the end of this section).
+(now removed, see the end of this section).
 
 - Temporal recovers a workflow by **replaying** its code against its event history. If the code now
   schedules `apply_job` where the history says `apply_job_dry_run`, replay fails with a
@@ -257,7 +260,7 @@ The switch from `apply_job_dry_run` to `apply_job` was guarded by `workflow.patc
   (that code runs for the first time). The patch protects histories that had already scheduled
   `apply_job_dry_run`.
 - `record-approval-v1` guarded the switch from `update_job_status(APPROVED)` to `record_approval`
-  the same way (now deprecated).
+  the same way (now removed).
 - `workflow.patched("skip-if-applied-v1")` guards the `is_applied_live` check at the very start of
   `run`. Open workflows started earlier have `load_job` as their first command, so on replay the
   patch returns `False` and they skip the check.
@@ -268,8 +271,10 @@ The switch from `apply_job_dry_run` to `apply_job` was guarded by `workflow.patc
   and `semantic_score`. Workflows already past that point (the ones waiting for approval when it
   shipped) replay without it; `awaiting_approval_v1.json` replays in a test.
 - `workflow.patched("cap-expiry-outcome-v1")` guards `update_job_status(EXPIRED)` → `expire_approval`
-  at the end of `_apply`. Workflows sleeping on the cap when it shipped finish on the old path;
-  `cap_expired_v1.json` (recorded with the code before it) replays in a test.
+  at the end of `_apply`. Workflows sleeping on the cap when it shipped finish on the old path.
+  `cap_expired_v2.json` covers the new path; the pre-patch `cap_expired_v1.json` was retired in
+  step 2 below (it also had non-deprecated `apply-job-v1` markers), so no saved history covers the
+  old path any more.
 - `test_every_saved_history_replays` globs `tests/workflows/histories/*.json` and replays each one,
   so a new patch cannot break any saved history.
 - Patch removal is two deploys:
@@ -280,8 +285,19 @@ The switch from `apply_job_dry_run` to `apply_job` was guarded by `workflow.patc
      still writes the marker (flagged `deprecated`), so histories recorded with `patched()` replay.
      The pre-patch histories `apply_dry_run_v0.json` and `apply_job_v1.json` moved to
      `histories/retired/`; `test_retired_histories_no_longer_replay` checks that they now fail.
-  2. **Planned:** once no open workflow has these markers in its history, remove the
-     `deprecate_patch` calls and stop registering `apply_job_dry_run`.
+  2. **Done 2026-10-16:** the `deprecate_patch` calls and the `APPLY_PATCH` / `APPROVAL_PATCH`
+     constants are gone, and the `apply_job_dry_run` activity is deleted (no longer registered).
+     Precondition, proven by replay: a marker written by `deprecate_patch` (`deprecated=true`) is
+     skipped when the code no longer asks for it, but a marker written by `patched()`
+     (`deprecated=false`) fails with *"Non-deprecated patch marker encountered … but there is no
+     corresponding change command"*. A worker restart does not rewrite old markers, so step 2 is
+     safe only when **no open run has a `deprecated=false` marker** for either id (those must finish
+     first). Gate: `scripts/replay_open_runs.py` downloads every open run's history and replays it
+     with the new code (`Replayer` + `pydantic_data_converter`); 6 open runs, none with either
+     marker, all replayed.
+     `record_approval_v1.json`, `ready_for_you_v1.json` and `cap_expired_v1.json` (non-deprecated
+     markers) moved to `histories/retired/`; `deprecated_markers_v1.json`, `ready_for_you_v2.json`
+     and `cap_expired_v2.json` were recorded on step-1 code and replay.
 - Still active (`patched()` with an old branch): `skip-if-applied-v1`, `fetch-details-v1`,
   `record-decision-v1`, `cap-expiry-outcome-v1`.
 

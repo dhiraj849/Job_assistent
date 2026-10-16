@@ -106,6 +106,7 @@ Notes:
 | Save one job detail page's HTML to `/tmp/naukri_job_page.html` | `uv run python -m scripts.inspect_job_page` |
 | Embedding demo (no DB) | `uv run python -m scripts.embedding_demo` |
 | Temporal worker (runs both workflows + activities) | `uv run python -m app.workflows.worker` |
+| Before / after deploying workflow code: replay every open application workflow with this checkout (exit 1 = do not deploy) | `uv run python -m scripts.replay_open_runs` |
 | Start discovery workflow (needs worker; starts one `job-{id}` workflow per new job) | `uv run python -m scripts.start_discovery --keyword "Python" --location "Noida"` |
 | Start the application workflow for one existing job | `uv run python -m scripts.start_job_workflow <job_id>` |
 | List jobs awaiting your approval, company-site forms ready for you (grouped by CAPTCHA / OTP), then `needs_manual` / `failed` jobs with their reason | `uv run python -m scripts.list_pending` |

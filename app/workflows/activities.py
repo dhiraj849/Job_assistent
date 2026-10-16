@@ -251,16 +251,3 @@ async def apply_job(job_id: int) -> ApplyResult:
             applier_factory=NaukriJobApplier,
         )
         return await service.apply(job_id)
-
-
-@activity.defn
-async def apply_job_dry_run(job_id: int) -> str:
-    """DRY-RUN: only logs what a real apply would do. No browser, no clicks.
-
-    Superseded by apply_job. Kept registered until no workflow history
-    started before the "apply-job-v1" patch is left (replay needs it).
-    """
-    job = await _get_job(job_id)
-    message = f"DRY-RUN: would apply to job {job_id} ({job.title} at {job.company}) via {job.url}"
-    logger.info("apply_dry_run", job_id=job_id, url=job.url)
-    return message

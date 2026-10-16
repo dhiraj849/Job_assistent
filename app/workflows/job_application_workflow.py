@@ -41,13 +41,6 @@ DETAILS_TIMEOUT = timedelta(minutes=2)
 # ~20 new jobs drains in a few minutes, so 30 minutes is plenty.
 DETAILS_DEADLINE = timedelta(minutes=30)
 
-# Version marker for the apply_job_dry_run -> apply_job change (see _run).
-# Deprecated (step 1 of 2): the old branch is gone; drop the call once no open
-# workflow has this marker in its history.
-APPLY_PATCH = "apply-job-v1"
-# Version marker for update_job_status(APPROVED) -> record_approval.
-# Deprecated (step 1 of 2), same as APPLY_PATCH.
-APPROVAL_PATCH = "record-approval-v1"
 # Version marker for the already-applied check at the start of _run.
 SKIP_APPLIED_PATCH = "skip-if-applied-v1"
 # Version marker for update_job_status(REJECTED/EXPIRED) -> record_decision.
@@ -170,10 +163,6 @@ class JobApplicationWorkflow:
             )
 
         # 5. Record the approval (applications row + jobs.status), then apply.
-        # deprecate_patch keeps writing the marker, so histories recorded
-        # with patched() still replay; histories from before the patch no
-        # longer do (none were open when the old branch was removed).
-        workflow.deprecate_patch(APPROVAL_PATCH)
         await workflow.execute_activity(
             record_approval,
             args=[job_id, self._decided_at, self._note],
@@ -182,7 +171,6 @@ class JobApplicationWorkflow:
         )
         self._status = JobStatus.APPROVED
 
-        workflow.deprecate_patch(APPLY_PATCH)
         return await self._apply(job_id)
 
     async def _apply(self, job_id: int) -> str:
@@ -243,8 +231,9 @@ class JobApplicationWorkflow:
         self, job_id: int, decision: Decision, decided_at: datetime, note: str
     ) -> str:
         status = JobStatus(decision.value)
-        # Same patching idea as APPROVAL_PATCH: histories that already ran
-        # update_job_status(REJECTED/EXPIRED) replay the old path.
+        # patched() is True on new runs and writes a marker; histories that
+        # already ran update_job_status(REJECTED/EXPIRED) have no marker, so
+        # replay takes the old path instead of a non-determinism error.
         if not workflow.patched(DECISION_PATCH):
             return await self._set_status(job_id, status)
 

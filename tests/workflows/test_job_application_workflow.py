@@ -262,9 +262,10 @@ def test_daily_cap_gives_up_after_3_days():
 
 
 # --- Versioning (workflow.patched / deprecate_patch) ---------------------
-# "apply-job-v1" and "record-approval-v1" are deprecated (step 1 of 2): their
-# old branches are gone, so histories recorded before them were moved to
-# histories/retired/ and must now FAIL to replay (proves the removal is real).
+# "apply-job-v1" and "record-approval-v1" are fully removed (step 2 of 2).
+# Histories whose marker for them came from patched() (deprecated=false), or
+# that predate them, were moved to histories/retired/ and must now FAIL to
+# replay (proves the removal is real).
 
 
 def replayer() -> Replayer:
@@ -281,14 +282,11 @@ def test_retired_histories_no_longer_replay():
 def test_patched_history_replays_on_new_path():
     _, _, _, history = asyncio.run(run_workflow("strong", decision=True))
 
-    # The new path leaves patch markers (skip-if-applied + details + approval
-    # + apply) and never schedules the old activities.
+    # The new path leaves patch markers (skip-if-applied + details only; the
+    # approval and apply patches are gone) and never schedules old activities.
     markers = [e for e in history.events if e.HasField("marker_recorded_event_attributes")]
-    assert [m.marker_recorded_event_attributes.marker_name for m in markers] == ["core_patch"] * 4
-    # Deprecated patches still write their marker, flagged as deprecated.
-    flags = _marker_flags(history)
-    assert flags["record-approval-v1"] is True
-    assert flags["apply-job-v1"] is True
+    assert [m.marker_recorded_event_attributes.marker_name for m in markers] == ["core_patch"] * 2
+    assert set(_marker_flags(history)) == {"skip-if-applied-v1", "fetch-details-v1"}
     assert "apply_job_dry_run" not in history.to_json()
     assert '"approved"' not in history.to_json()  # no update_job_status(APPROVED)
 
@@ -387,15 +385,18 @@ def test_not_applied_job_runs_the_full_pipeline():
     assert calls == ["load_job", "fetch_job_details", "match_job"]
 
 
-# record_approval_v1.json is a REAL history (job-38 on the local Temporal
-# server, 2026-10-07): started before "record-approval-v1", approved after it,
-# so it has the approval + apply markers but no "skip-if-applied-v1" marker.
+# deprecated_markers_v1.json was recorded on step-1 code: deprecate_patch
+# wrote "apply-job-v1" / "record-approval-v1" markers flagged deprecated=true.
+# Core skips such markers when no code asks for them, so a workflow that ran
+# on step-1 code replays fine now that the calls are gone.
 
 
-def test_real_record_approval_history_replays():
+def test_deprecated_marker_history_replays_without_the_calls():
     history = WorkflowHistory.from_json(
-        "job-38", (HISTORIES / "record_approval_v1.json").read_text()
+        "deprecated_markers_v1", (HISTORIES / "deprecated_markers_v1.json").read_text()
     )
+    assert _marker_flags(history)["apply-job-v1"] is True
+    assert _marker_flags(history)["record-approval-v1"] is True
     asyncio.run(replayer().replay_workflow(history))
 
 
@@ -552,19 +553,18 @@ def test_cap_expiry_expires_the_application():
     asyncio.run(replayer().replay_workflow(history))
 
 
-# cap_expired_v1.json was recorded with the code from BEFORE
-# "cap-expiry-outcome-v1": after 4 capped apply_job calls it ends with
-# update_job_status(EXPIRED). A workflow sleeping on the cap when the patch
-# shipped must finish on that old path.
+# cap_expired_v2.json was recorded on step-1 code (new path: expire_approval).
+# The pre-patch cap_expired_v1.json is retired: it also carried non-deprecated
+# "apply-job-v1" markers, so no saved history covers the old
+# update_job_status(EXPIRED) path any more.
 
 
-def test_pre_cap_expiry_patch_history_replays_on_old_path():
+def test_cap_expired_history_replays():
     history = WorkflowHistory.from_json(
-        "cap_expired_v1", (HISTORIES / "cap_expired_v1.json").read_text()
+        "cap_expired_v2", (HISTORIES / "cap_expired_v2.json").read_text()
     )
     asyncio.run(replayer().replay_workflow(history))
-    assert "expire_approval" not in history.to_json()
-    assert [s for _, s in _scheduled_inputs(history, "update_job_status")][-1] == "expired"
+    assert _scheduled_inputs(history, "expire_approval") == [[JOB_ID, CAP_EXPIRED_REASON]]
 
 
 def test_every_saved_history_replays():
@@ -579,8 +579,8 @@ def test_every_saved_history_replays():
 
 # --- Company site: ready_for_you ---------------------------------------------------
 # apply_job may now return READY_FOR_YOU. The workflow only mirrors it in its
-# query state (no new command), so no patch; ready_for_you_v1.json was
-# recorded from this code and must keep replaying.
+# query state (no new command), so no patch; ready_for_you_v2.json was
+# recorded on step-1 code and must keep replaying.
 
 
 def test_company_site_ready_ends_the_workflow():
@@ -597,7 +597,7 @@ def test_company_site_ready_ends_the_workflow():
 
 def test_ready_for_you_history_replays():
     history = WorkflowHistory.from_json(
-        "ready_for_you_v1", (HISTORIES / "ready_for_you_v1.json").read_text()
+        "ready_for_you_v2", (HISTORIES / "ready_for_you_v2.json").read_text()
     )
     asyncio.run(replayer().replay_workflow(history))
     completed = history.events[-1].workflow_execution_completed_event_attributes
