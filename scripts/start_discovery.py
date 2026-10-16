@@ -7,26 +7,21 @@ Without flags it uses search.keyword / search.location from the profile.
 
 import argparse
 import asyncio
-import re
 
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from app.config import settings
 from app.services.profile_loader import load_profile
 from app.workflows.client import connect_client
+from app.workflows.ids import discovery_workflow_id
 from app.workflows.job_discovery_workflow import JobDiscoveryWorkflow
-
-
-def slugify(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
 async def main(keyword: str, location: str) -> None:
     client = await connect_client()
 
-    # Stable ID per search: Temporal refuses a second run with the same
-    # ID while one is still running, so we never scrape the same search twice at once.
-    workflow_id = f"discovery-{slugify(keyword)}-{slugify(location)}"
+    # Same ID as the scheduled runs' prefix: never two scrapes of one search at once.
+    workflow_id = discovery_workflow_id(keyword, location)
 
     try:
         result = await client.execute_workflow(

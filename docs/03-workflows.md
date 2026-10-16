@@ -52,7 +52,34 @@ sequenceDiagram
 | `save_jobs(jobs) -> list[int]` | `activities.py` | Own `SessionLocal` session; `JobRepository.save_jobs(source="naukri")` + `get_ids_by_urls`; returns the ids of the new jobs. start-to-close **30 s**. |
 | Client | `client.py` | `connect_client()` — the only way to connect; always uses `pydantic_data_converter`. |
 | Worker | `worker.py` | Registers the three workflows (discovery, application, backfill) + all activities on `TEMPORAL_TASK_QUEUE`, `max_concurrent_activities=3` (caps parallel LLM / browser work). A second `Worker` in the same process serves `fetch_job_details` on `BROWSER_TASK_QUEUE` (`job-agent-browser`, `app/workflows/task_queues.py`) with `max_concurrent_activities=1`: one detail page at a time, and waiting tasks stay on the server instead of holding a main-queue slot. Logs `worker_started` with `apply_mode`, `max_applies_per_day`, `browser_task_queue`, `detail_page_delay_seconds` and `detail_page_jitter_seconds`, so the log shows which safety rails the running worker uses. |
-| Starter | `scripts/start_discovery.py` | Keyword / location default to the profile's `search:` section. Starts the workflow with ID `discovery-{keyword}-{location}` (slugified), waits, prints the result. |
+| Starter | `scripts/start_discovery.py` | Keyword / location default to the profile's `search:` section. Starts the workflow with ID `discovery-{keyword}-{location}` (slugified by `app/workflows/ids.py`), waits, prints the result. |
+| Schedule | `scripts/schedule_discovery.py` | Temporal Schedule, see [Discovery schedule](#discovery-schedule-built). |
+
+### Discovery schedule (Built)
+
+`scripts/schedule_discovery.py` manages **one** Temporal Schedule, fixed ID **`discovery-schedule`**,
+that starts `JobDiscoveryWorkflow(keyword, location)` (profile `search:` defaults, or
+`--keyword` / `--location`) on `TEMPORAL_TASK_QUEUE`.
+
+| Setting | Value | Why |
+|---|---|---|
+| When | `--hours 9,18 --minute 0` (default), `time_zone_name="Asia/Kolkata"` | Twice a day, IST |
+| Jitter | up to 15 min after the nominal time | Not the same minute every day |
+| Overlap | `SKIP` | A slot is dropped while the previous discovery still runs |
+| Catch-up window | 1 h | After downtime, no burst of stale runs |
+| Workflow ID | action ID `discovery-{keyword}-{location}`; Temporal appends the scheduled time, e.g. `discovery-python-backend-engineer-noida-2026-10-17T03:30:00Z` | Same prefix as a manual `start_discovery` run |
+
+Subcommands: `upsert` (create, or update in place; a paused schedule stays paused), `pause --note`,
+`unpause`, `trigger` (one run now, overlap rule applies), `list` (all schedule IDs, then this one's
+search, times, state, next and recent runs), `delete` (past runs are kept). `upsert` is idempotent
+because the ID is fixed: a second create is refused (`ScheduleAlreadyRunningError`) and it updates
+instead. Workflow code is unchanged, so no patch. Tests: `tests/scripts/test_schedule_discovery.py`;
+live check 2026-10-16 with a paused throw-away schedule (duplicate refused, next runs 03:30 / 12:30 UTC
+plus jitter, then deleted).
+
+A `discovery-schedule` already exists on the local server (created 2026-10-08, outside this repo):
+"Python Developer" / Delhi, 09:00 + 18:00 IST, SKIP, no jitter, unpaused. `upsert` would replace its
+search with the profile's (or the flags'); it was left untouched.
 
 - **Retry policy** (all activities, `app/workflows/retry.py`): max 3 attempts, initial interval 10 s, backoff 2.0.
 - **Payloads are our Pydantic models** (`Job`, `JobMatchItem`, `JobStatus`) via
@@ -321,7 +348,7 @@ The switch from `apply_job_dry_run` to `apply_job` was guarded by `workflow.patc
 
 | Workflow | Workflow ID | Started by | Purpose |
 |---|---|---|---|
-| `JobDiscoveryWorkflow` | `discovery-{user_id}-{scheduled_time}` | Temporal Schedule (e.g. twice a day) or API "run now" | Find, store, filter, rank and evaluate new jobs; start application workflows for good matches. |
+| `JobDiscoveryWorkflow` | `discovery-{keyword}-{location}-{scheduled_time}` (built; `{user_id}` added in the multi-user phase) | Temporal Schedule `discovery-schedule` (built) or API "run now" | Find, store, filter, rank and evaluate new jobs; start application workflows for good matches. |
 | `JobApplicationWorkflow` | **`job-{job_id}`** | `JobDiscoveryWorkflow` (child or via client start) | Take one matched job through approval and (optionally) submission. |
 
 Using `job-{job_id}` as the workflow ID makes the application flow **idempotent per job**: starting

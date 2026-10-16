@@ -243,7 +243,7 @@ sequenceDiagram
 
 | Concern | Current | Target |
 |---|---|---|
-| Trigger | Manual `python main.py` | Temporal Schedule → `JobDiscoveryWorkflow` |
+| Trigger | Temporal Schedule `discovery-schedule` → `JobDiscoveryWorkflow` (`scripts/schedule_discovery.py`), or manual `scripts/start_discovery.py`; legacy `python main.py` | Same |
 | Orchestration | `JobMatchingPipeline.run()` in-process | Temporal workflows + activities |
 | Job detail | Workflow path: detail page read after the filter (`jobs.description_full`, `jobs.details`); `main.py` path: snippet unless details were already stored; older jobs: `scripts/backfill_details.py` | Same |
 | Job state | Implicit (row in `jobs` / row in `job_matches`) | Explicit lifecycle state machine ([03](03-workflows.md#job-lifecycle-state-machine)) |

@@ -14,7 +14,7 @@ Verified against commit `5c4f3c2` plus the patch-removal step 1 on `chore/leftov
 | Discovery | Detail-page scraping (full JD + details: JSON-LD, DOM fallback; one page at a time on `job-agent-browser`, `DETAIL_PAGE_DELAY_SECONDS`; patch `fetch-details-v1`) | Built (live fetch via worker verified 2026-10-08: 4/4 new jobs, no snippet fallback) | `app/job_sources/naukri_detail.py`, `naukri_detail_parser.py`, `activities.fetch_job_details`, migration `b50143f8cf9c`, `tests/job_sources/` |
 | Discovery | Backfill details for jobs saved before detail fetching | Planned | — |
 | Discovery | Random jitter on the detail-page delay (`DETAIL_PAGE_DELAY_SECONDS` + `uniform(0, DETAIL_PAGE_JITTER_SECONDS)`, in the activity) | Built (2026-10-16, unit test with patched sleep/random) | `activities.fetch_job_details`, `app/config.py`, `tests/workflows/test_fetch_job_details_activity.py` |
-| Discovery | Scheduled runs | Planned | — |
+| Discovery | Scheduled runs | Built (see Workflows row) | `scripts/schedule_discovery.py` |
 | Storage | `jobs` table, dedupe by URL, `last_seen_at` refresh | Built | `app/db/job_repository.py:19`, migration `e38fb9a63e38` |
 | Storage | `job_matches` table | Built | migration `6fc31f68061a` |
 | Storage | Job lifecycle status (`jobs.status`; live `applied` is terminal: guarded status writes) | Built | `app/models/job_status.py`, `JobRepository._set_job_status`, `tests/integration/test_applications_db.py` |
@@ -67,7 +67,7 @@ Verified against commit `5c4f3c2` plus the patch-removal step 1 on `chore/leftov
 | Workflows | Temporal `JobDiscoveryWorkflow` (search + save, starts one child per new job) | Built | `app/workflows/`, `scripts/start_discovery.py` |
 | Workflows | Temporal `JobApplicationWorkflow` (filter → semantic score → LLM match → approval → apply with safety rails) | Built | `app/workflows/job_application_workflow.py`, `scripts/start_job_workflow.py` |
 | Workflows | `jobs.status` lifecycle (`JobStatus`) + Pydantic data converter | Built | `app/models/job_status.py`, migration `b5d33dd745b3`, `app/workflows/client.py` |
-| Workflows | Temporal Schedule for discovery | Planned | — |
+| Workflows | Temporal Schedule for discovery (`discovery-schedule`, 09:00 + 18:00 IST, 15 min jitter, overlap SKIP, idempotent `upsert`, pause / unpause / trigger / list / delete) | Built (2026-10-16; checked live with a paused throw-away schedule. A pre-existing `discovery-schedule` for "Python Developer" / Delhi, created 2026-10-08 outside the repo, was left as is) | `scripts/schedule_discovery.py`, `app/workflows/ids.py`, `tests/scripts/test_schedule_discovery.py` |
 | API / UI | FastAPI, Next.js dashboard | Planned | — |
 | Observability | structlog console/JSON | Built | `app/logging_config.py` |
 | Observability | OpenTelemetry, Grafana stack, Langfuse | Planned | — |

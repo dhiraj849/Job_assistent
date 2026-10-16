@@ -109,6 +109,8 @@ Notes:
 | Temporal worker (runs both workflows + activities) | `uv run python -m app.workflows.worker` |
 | Before / after deploying workflow code: replay every open application workflow with this checkout (exit 1 = do not deploy) | `uv run python -m scripts.replay_open_runs` |
 | Start discovery workflow (needs worker; starts one `job-{id}` workflow per new job) | `uv run python -m scripts.start_discovery` (defaults: profile `search.keyword` / `search.location`; override with `--keyword` / `--location`) |
+| Discovery schedule (09:00 + 18:00 IST): create / update | `uv run python -m scripts.schedule_discovery upsert` (`--hours 9,18 --minute 0 --keyword K --location L`) |
+| Discovery schedule: show / pause / resume / run now / remove | `uv run python -m scripts.schedule_discovery list` · `pause --note "..."` · `unpause` · `trigger` · `delete` |
 | Start the application workflow for one existing job | `uv run python -m scripts.start_job_workflow <job_id>` |
 | List jobs awaiting your approval, company-site forms ready for you (grouped by CAPTCHA / OTP), then `needs_manual` / `failed` jobs with their reason | `uv run python -m scripts.list_pending` |
 | Fill a `ready_for_you` company-site form, then finish it yourself (CAPTCHA / OTP / Submit) and record it | `uv run python -m scripts.apply_company_site <job_id>` |
