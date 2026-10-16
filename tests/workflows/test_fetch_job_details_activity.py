@@ -49,6 +49,7 @@ def fake_io(monkeypatch):
     monkeypatch.setattr(activities, "JobRepository", Repo)
     monkeypatch.setattr(activities, "SessionLocal", Session)
     monkeypatch.setattr(activities.settings, "DETAIL_PAGE_DELAY_SECONDS", 0)
+    monkeypatch.setattr(activities.settings, "DETAIL_PAGE_JITTER_SECONDS", 0)
     return state
 
 
@@ -65,6 +66,28 @@ def test_reads_parses_and_saves_the_page(fake_io):
     assert len(fake_io["saved"]) == 1
     assert job.details.source == "json_ld"
     assert len(job.description) > 500
+
+
+def test_sleeps_base_delay_plus_random_jitter(fake_io, monkeypatch):
+    fake_io["html"] = FIXTURE.read_text(encoding="utf-8")
+    monkeypatch.setattr(activities.settings, "DETAIL_PAGE_DELAY_SECONDS", 3.0)
+    monkeypatch.setattr(activities.settings, "DETAIL_PAGE_JITTER_SECONDS", 2.0)
+    uniform_args, slept = [], []
+
+    def fake_uniform(low, high):
+        uniform_args.append((low, high))
+        return 1.25
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(activities.random, "uniform", fake_uniform)
+    monkeypatch.setattr(activities.asyncio, "sleep", fake_sleep)
+
+    run()
+
+    assert uniform_args == [(0, 2.0)]
+    assert slept == [4.25]
 
 
 def test_already_fetched_job_makes_no_request(fake_io):

@@ -144,7 +144,8 @@ docker-compose (e.g. `TEMPORAL_DB_*` used only by the Temporal containers).
 | `ANSWERS_PATH` | `answers.yaml` | `app/services/answers_loader.py` | Apply-question answers YAML (unknown keys rejected) |
 | `BROWSER_HEADLESS` | `false` | Naukri source | `true` for headless Chromium |
 | `BROWSER_TIMEOUT_MS` | `20000` | Naukri source | Playwright default timeout |
-| `DETAIL_PAGE_DELAY_SECONDS` | `3.0` | — | **Defined but unused** (reserved for detail-page scraping) |
+| `DETAIL_PAGE_DELAY_SECONDS` | `3.0` | `activities.fetch_job_details` | Base sleep before every detail-page request |
+| `DETAIL_PAGE_JITTER_SECONDS` | `2.0` | `activities.fetch_job_details` | Extra random `0..N` s added to the base delay (`ge=0`; `0` turns jitter off) |
 | `NAUKRI_STATE_KEY` | *(none)* | `session_store` | Fernet key for the saved Naukri session; `SecretStr`. Not in `.env.example` yet |
 | `NAUKRI_STATE_PATH` | `secrets/naukri_state.enc` | `session_store` | Encrypted session file (gitignored folder) |
 | `POSTGRES_USER` | `job_agent` | app, compose | |

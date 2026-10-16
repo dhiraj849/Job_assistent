@@ -68,6 +68,7 @@ async def main() -> None:
         apply_mode=settings.APPLY_MODE,
         max_applies_per_day=settings.MAX_APPLIES_PER_DAY,
         detail_page_delay_seconds=settings.DETAIL_PAGE_DELAY_SECONDS,
+        detail_page_jitter_seconds=settings.DETAIL_PAGE_JITTER_SECONDS,
     )
     # Both workers share the process; if one stops, gather stops the other.
     await asyncio.gather(worker.run(), browser_worker.run())

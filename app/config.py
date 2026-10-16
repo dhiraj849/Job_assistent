@@ -43,6 +43,10 @@ class Settings(BaseSettings):
 
     DETAIL_PAGE_DELAY_SECONDS: float = 3.0
 
+    # Extra random 0..N seconds on top of the delay: a fixed gap between
+    # requests is an easy bot signal.
+    DETAIL_PAGE_JITTER_SECONDS: float = Field(default=2.0, ge=0)
+
     # Naukri login session (cookies + localStorage), encrypted at rest.
     # Generate a key: uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     NAUKRI_STATE_KEY: SecretStr | None = None

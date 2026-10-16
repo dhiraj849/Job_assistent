@@ -6,6 +6,7 @@ the worker and clients use the Pydantic data converter (app/workflows/client.py)
 """
 
 import asyncio
+import random
 from datetime import datetime
 from functools import cache
 
@@ -125,7 +126,10 @@ async def fetch_job_details(job_id: int) -> Job:
 
     # Polite gap before every request; with one activity at a time on the
     # browser queue this is the minimum time between two Naukri pages.
-    await asyncio.sleep(settings.DETAIL_PAGE_DELAY_SECONDS)
+    # Random is fine here: activities may be non-deterministic, workflows not.
+    await asyncio.sleep(
+        settings.DETAIL_PAGE_DELAY_SECONDS + random.uniform(0, settings.DETAIL_PAGE_JITTER_SECONDS)
+    )
     html = await fetch_job_page(
         job.url, headless=settings.BROWSER_HEADLESS, timeout_ms=settings.BROWSER_TIMEOUT_MS
     )
