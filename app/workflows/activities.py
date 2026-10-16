@@ -68,6 +68,10 @@ async def discover_jobs(keyword: str, location: str) -> list[Job]:
         location=location,
         headless=settings.BROWSER_HEADLESS,
         timeout_ms=settings.BROWSER_TIMEOUT_MS,
+        # Read here, not passed by the workflow: its args (and histories) stay the same.
+        max_pages=settings.MAX_SEARCH_PAGES,
+        page_delay_seconds=settings.SEARCH_PAGE_DELAY_SECONDS,
+        page_jitter_seconds=settings.SEARCH_PAGE_JITTER_SECONDS,
     )
     jobs = await source.get_jobs()
 

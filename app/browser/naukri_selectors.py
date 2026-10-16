@@ -15,6 +15,16 @@ the only file to fix. Each selector says where it was checked:
 # VERIFIED 2026-09-24 (live login).
 LOGGED_IN_MARKER = ".nI-gNb-drawer__icon, .nI-gNb-icon-img, a[href*='/mnjuser/profile']"
 
+# --- Search results ------------------------------------------------------------
+
+# The "Next" link under the result cards: <a href="/<search>-2"><span>Next</span></a>.
+# Matched by its text because the classes are CSS-module hashes. We follow its
+# href instead of building "-N" URLs: page 2+ URLs drop the k= / l= query.
+# On page 1 "Previous" has a `disabled` attribute and no href; a last page
+# is expected to show "Next" the same way (not seen live yet).
+# VERIFIED 2026-10-16 (tests/fixtures/naukri/search_page_1.html, search_page_2.html).
+SEARCH_NEXT_PAGE = "a:has(> span:text-is('Next'))"
+
 # --- Apply button in the job header ---------------------------------------------
 
 # Element id -> button type value (see apply_button.ApplyButtonType).

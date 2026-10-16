@@ -1,3 +1,5 @@
+from urllib.parse import urljoin
+
 import structlog
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import (
@@ -8,7 +10,7 @@ from playwright.async_api import (
     async_playwright,
 )
 
-from app.browser.naukri_selectors import LOGGED_IN_MARKER
+from app.browser.naukri_selectors import LOGGED_IN_MARKER, SEARCH_NEXT_PAGE
 from app.browser.session_store import load_state
 
 logger = structlog.get_logger(__name__)
@@ -62,6 +64,22 @@ class NaukriBrowser:
 
         await self.page.get_by_text("Search", exact=True).click()
 
+        await self.page.wait_for_selector(JOB_CARD)
+
+    async def next_page_url(self) -> str | None:
+        """Absolute URL of the next results page, or None on the last page."""
+        link = self.page.locator(SEARCH_NEXT_PAGE).first
+        if await link.count() == 0:
+            return None
+
+        href = await link.get_attribute("href")
+        if not href or await link.get_attribute("disabled") is not None:
+            return None
+        return urljoin(self.page.url, href)
+
+    async def open_results_page(self, url: str) -> None:
+        # A plain navigation to the Next href: no click, same as a user opening the link.
+        await self.page.goto(url)
         await self.page.wait_for_selector(JOB_CARD)
 
     async def is_logged_in(self, timeout_ms: int = 5000) -> bool:

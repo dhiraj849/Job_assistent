@@ -10,7 +10,7 @@ Verified against commit `5c4f3c2` plus the patch-removal step 1 on `chore/leftov
 | Config | Candidate profile from YAML | Built | `app/services/profile_loader.py`, `profile.example.yaml` |
 | Discovery | Naukri search (first results page) via Playwright | Built | `app/job_sources/naukri.py`, `app/browser/naukri_browser.py` |
 | Discovery | Card extraction (title, company, location, exp, snippet, skills, URL) | Built | `app/job_sources/naukri_extractor.py` |
-| Discovery | Pagination | Planned | — |
+| Discovery | Pagination (follow "Next" href, up to `MAX_SEARCH_PAGES`, delay + jitter, stop on no new cards / no next page) | Built (live 2026-10-16: 3 pages, 59 unique jobs, 45 s) | `app/job_sources/naukri.py`, `naukri_browser.next_page_url`, `naukri_selectors.SEARCH_NEXT_PAGE`, `tests/browser/test_search_pagination.py`, `tests/job_sources/test_naukri_source_pagination.py`, `tests/fixtures/naukri/search_page_*.html` |
 | Discovery | Detail-page scraping (full JD + details: JSON-LD, DOM fallback; one page at a time on `job-agent-browser`, `DETAIL_PAGE_DELAY_SECONDS`; patch `fetch-details-v1`) | Built (live fetch via worker verified 2026-10-08: 4/4 new jobs, no snippet fallback) | `app/job_sources/naukri_detail.py`, `naukri_detail_parser.py`, `activities.fetch_job_details`, migration `b50143f8cf9c`, `tests/job_sources/` |
 | Discovery | Backfill details for jobs saved before detail fetching | Planned | — |
 | Discovery | Random jitter on the detail-page delay (`DETAIL_PAGE_DELAY_SECONDS` + `uniform(0, DETAIL_PAGE_JITTER_SECONDS)`, in the activity) | Built (2026-10-16, unit test with patched sleep/random) | `activities.fetch_job_details`, `app/config.py`, `tests/workflows/test_fetch_job_details_activity.py` |
@@ -61,7 +61,7 @@ Verified against commit `5c4f3c2` plus the patch-removal step 1 on `chore/leftov
 | Apply | Multi-step company forms: fill each page, click Next (never Submit), pause only where I am needed, with a desktop notification + in-page banner and highlighted fields (agreed 2026-10-15, deferred) | Planned | — |
 | Apply | Opt-in company-site submit behind `APPLY_MODE` + per-job y/N | Planned | — |
 | Apply | Verify apply selectors on live pages (verified: login marker, company-site + Naukri apply buttons, apply confirmation, already-applied, and all chatbot selectors 2026-10-15: drawer, bot message, text input, checkboxes + labels, send on job 1076 (`tests/fixtures/naukri/chatbot.html`), radio labels on job 7 (`chatbot_radio.html`). Job 1070 had no questions, so its one inspector click applied directly) | Verified 2026-10-15 (fixtures; typing into the text input not seen live yet) | `app/browser/naukri_selectors.py`, `tests/fixtures/naukri/` |
-| Browser | Rate limiting / delays | In progress (detail pages: 1 at a time + delay with random jitter; apply: random pauses; discovery: none) | `app/workflows/task_queues.py`, `worker.py` |
+| Browser | Rate limiting / delays | In progress (detail pages: 1 at a time + delay with random jitter; apply: random pauses; search pages: delay + jitter) | `app/workflows/task_queues.py`, `worker.py` |
 | Browser | Screenshots / artifacts (MinIO) | Planned | — |
 | Workflows | Temporal `JobDiscoveryWorkflow` (search + save, starts one child per new job) | Built | `app/workflows/`, `scripts/start_discovery.py` |
 | Workflows | Temporal `JobApplicationWorkflow` (filter → semantic score → LLM match → approval → apply with safety rails) | Built | `app/workflows/job_application_workflow.py`, `scripts/start_job_workflow.py` |

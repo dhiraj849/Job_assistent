@@ -22,9 +22,17 @@ class NaukriExtractor:
             ".loc"
         ).inner_text()
 
-        description = await job_card.locator(
+        # Some cards have no snippet. Waiting for it cost a full browser
+        # timeout and dropped the job; fetch_job_details reads the full JD later.
+        description = ""
+
+        description_locator = job_card.locator(
             ".job-desc"
-        ).inner_text()
+        )
+
+        if await description_locator.count() > 0:
+
+            description = await description_locator.inner_text()
 
         # --------------------------------------------
         # Experience

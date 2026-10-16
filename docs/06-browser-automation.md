@@ -30,8 +30,9 @@ flowchart LR
 | Launch | `NaukriBrowser.start()` (`app/browser/naukri_browser.py`) | New Playwright, `chromium.launch(headless=...)`, new context every run, default timeout `BROWSER_TIMEOUT_MS` (20 s). With `logged_in=True` the context starts from the saved, decrypted session (see below). |
 | Open | `open_naukri()` | `goto("https://www.naukri.com/")`. |
 | Search | `search_jobs()` | Fill keyword + location inputs, click text "Search", `wait_for_selector(JOB_CARD)`. |
-| Extract | `NaukriJobSource.get_jobs()` (`app/job_sources/naukri.py:30`) → `NaukriExtractor.extract_job()` | Iterates cards on the **first result page only**; per-card failures are logged (`job_extraction_failed`) and skipped. |
-| No results | `naukri.py:53` | Timeout waiting for cards → `no_job_cards_found` warning, returns `[]`. |
+| Extract | `NaukriJobSource.get_jobs()` (`app/job_sources/naukri.py`) → `_extract_page()` → `NaukriExtractor.extract_job()` | Iterates the cards of each result page; per-card failures are logged (`job_extraction_failed`) and skipped. A card without a `.job-desc` snippet is kept with an empty description (the detail page fills it later) instead of waiting a full timeout. |
+| Paginate | `NaukriBrowser.next_page_url()` + `open_results_page(url)` | Up to `max_pages` pages (the `discover_jobs` activity passes `MAX_SEARCH_PAGES`, default 3, max 5; the class default is 1). Follows the "Next" link's `href` (plain `goto`, no click), because page 2+ URLs (`/<search>-2`) drop the `k=` / `l=` query. Sleeps `SEARCH_PAGE_DELAY_SECONDS` + `uniform(0, SEARCH_PAGE_JITTER_SECONDS)` between pages. Jobs are de-duplicated by URL. Stops early when a page has **no new cards**, there is **no Next link** (missing, no `href` or `disabled`), or a later page **times out** (keeps the jobs read so far, `search_page_timeout`). Live 2026-10-16: 3 pages, 59 unique jobs, 45 s. |
+| No results | `naukri.py` | Timeout waiting for cards on page 1 → `no_job_cards_found` warning, returns `[]`. |
 | Close | `finally: browser.close()` | Always closes browser and Playwright. |
 
 Search does not log in (results are public). Only the inspection tools below use a logged-in session.
@@ -50,7 +51,8 @@ Selectors live as constants / literals; they will break when Naukri changes its 
 | Company | `.comp-name` | same |
 | Location | `.loc` | same |
 | Experience (optional) | `.exp` | same |
-| Description snippet | `.job-desc` | same |
+| Description snippet (optional) | `.job-desc` | same |
+| Next results page | `SEARCH_NEXT_PAGE` = `a:has(> span:text-is('Next'))` (verified on `tests/fixtures/naukri/search_page_1.html` / `_2.html`, saved by `scripts/inspect_search_page.py`; checked in Chromium by `tests/browser/test_search_pagination.py`) | `app/browser/naukri_selectors.py` |
 | Skill tags | `.tags-gt .tag-li` | same |
 | Detail-page JD + details | See [Job detail page](#job-detail-page-built) | `app/browser/naukri_selectors.py` |
 

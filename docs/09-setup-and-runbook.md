@@ -144,6 +144,9 @@ docker-compose (e.g. `TEMPORAL_DB_*` used only by the Temporal containers).
 | `BROWSER_TIMEOUT_MS` | `20000` | Naukri source | Playwright default timeout |
 | `DETAIL_PAGE_DELAY_SECONDS` | `3.0` | `activities.fetch_job_details` | Base sleep before every detail-page request |
 | `DETAIL_PAGE_JITTER_SECONDS` | `2.0` | `activities.fetch_job_details` | Extra random `0..N` s added to the base delay (`ge=0`; `0` turns jitter off) |
+| `MAX_SEARCH_PAGES` | `3` | `activities.discover_jobs` | Search result pages per discovery run (20 cards each); `1..5`, capped to fit the 3 min activity timeout |
+| `SEARCH_PAGE_DELAY_SECONDS` | `3.0` | `activities.discover_jobs` | Base sleep between two result pages |
+| `SEARCH_PAGE_JITTER_SECONDS` | `2.0` | `activities.discover_jobs` | Extra random `0..N` s between result pages |
 | `NAUKRI_STATE_KEY` | *(none)* | `session_store` | Fernet key for the saved Naukri session; `SecretStr`. Not in `.env.example` yet |
 | `NAUKRI_STATE_PATH` | `secrets/naukri_state.enc` | `session_store` | Encrypted session file (gitignored folder) |
 | `POSTGRES_USER` | `job_agent` | app, compose | |

@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     # requests is an easy bot signal.
     DETAIL_PAGE_JITTER_SECONDS: float = Field(default=2.0, ge=0)
 
+    # Search result pages read per discovery run (20 cards each). Capped so
+    # the discover_jobs activity stays inside its 3 min timeout.
+    MAX_SEARCH_PAGES: int = Field(default=3, ge=1, le=5)
+
+    # Gap between two search result pages: base + random 0..jitter seconds.
+    SEARCH_PAGE_DELAY_SECONDS: float = Field(default=3.0, ge=0)
+
+    SEARCH_PAGE_JITTER_SECONDS: float = Field(default=2.0, ge=0)
+
     # Naukri login session (cookies + localStorage), encrypted at rest.
     # Generate a key: uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     NAUKRI_STATE_KEY: SecretStr | None = None
