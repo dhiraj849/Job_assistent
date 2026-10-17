@@ -1,0 +1,64 @@
+name: "Dhiraj Sharma"
+experience_years: 5
+education: "Bachelor's in Mathematics"
+
+skills:
+  - Python
+  - Django
+  - FastAPI
+  - PostgreSQL
+  - AWS
+  - Docker
+
+# Search + pre-filter. Keywords match whole words, case-insensitive
+# ("rag" does not match "storage").
+search:
+  keyword: "Python Backend Engineer"
+  location: "Noida"
+
+  title_keywords:
+    - python
+    - backend
+    - back end
+    - django
+    - fastapi
+    - flask
+    - ai engineer
+    - ml engineer
+    - machine learning
+    - genai
+    - generative ai
+    - rag
+
+  generic_titles:
+    - software developer
+    - software engineer
+
+  supporting_skills:
+    - python
+    - django
+    - fastapi
+    - flask
+    - rest api
+    - rest
+    - backend
+    - postgresql
+    - mysql
+    - mongodb
+    - aws
+    - docker
+
+  exclude_title_keywords:
+    - frontend
+    - front end
+    - full stack
+    - fullstack
+    - ssh engineer
+    - object engineer
+
+  role_focus:
+    - Python backend development
+    - Django
+    - FastAPI
+    - REST APIs
+    - AI / GenAI backend roles

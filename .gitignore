@@ -1,20 +1,12 @@
 __pycache__/
 *.pyc
 .venv/
-.env
 .pytest_cache/
 venv/
 *.zip
-profile.yaml
-answers.yaml
-learned_answers.yaml
-# Encrypted Naukri session and inspection dumps (contain personal data)
-secrets/
+# Naukri page inspection dumps (large, regenerated)
 artifacts/
 # MkDocs build output
 site/
 # Makefile runtime files (worker PID + log)
 .run/
-# Resumes kept next to answers.yaml (personal data)
-/*.pdf
-/*.docx

@@ -1,0 +1,21 @@
+# Answers I approved for form fields (scripts/inspect_company_site.py --fill-preview).
+# Edit freely; keys are lowercase field labels.
+answers:
+  city: Noida
+  country: India
+  current address: Noida, India
+  current company: Triazine Software Pvt. Ltd
+  highest qualification: B Sc
+  how did you hear about this job: social media
+  location preference: Any
+  nationality: Indian
+  pin code: '301022'
+  position applied for: Python Developer
+  primary skills: Python
+  relevant experience: 1-4 Years
+  state/province: UP
+  technology: Python
+  total experience: 3+ Years
+  were you referred to this role by a current tower research capital employee if so, please provide their name.: Not
+    reffered
+  year of passing: '2022'
